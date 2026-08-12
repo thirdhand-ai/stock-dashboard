@@ -1,0 +1,18 @@
+# Stock Dashboard - daily automation cron entry (EXAMPLE - not installed).
+# This file is inert; nothing in the repo reads or installs it. To use it:
+#   1. Edit the path below to your actual deployment location.
+#   2. Run `crontab -e` and paste the line in (or `crontab deploy/crontab.example`
+#      after editing it, which replaces your whole crontab - be careful with that).
+#
+# Runs weekdays at 16:30 in the timezone below. Most cron implementations
+# (Vixie/cronie, used by most Linux distros) support a leading TZ= line
+# scoped to the entries after it. If yours doesn't, set the server's system
+# timezone to America/New_York instead (`timedatectl set-timezone America/New_York`)
+# so the plain "30 16" below is already correct local time, including across
+# DST changes - simpler than hand-computing a UTC offset that drifts twice a year.
+TZ=America/New_York
+30 16 * * 1-5 cd /path/to/stock-dashboard && venv/bin/python -m automation.run_daily >> logs/automation.log 2>&1
+
+# Dry-run by default (matches automation/run_daily.py's own default) - add
+# --send to the command above only once you've decided you want real
+# Discord delivery from the scheduled job.

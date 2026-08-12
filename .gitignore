@@ -1,0 +1,15 @@
+.env
+.env.*
+node_modules/
+.DS_Store
+venv/
+venv-py39.bak/
+__pycache__/
+*.pyc
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.lock
+data/research_cache/*.pkl
+logs/*.log
+.pytest_cache/

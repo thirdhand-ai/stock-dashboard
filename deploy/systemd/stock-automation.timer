@@ -1,0 +1,21 @@
+# systemd timer triggering stock-automation.service. EXAMPLE - not
+# installed by anything in this repo.
+#
+# OnCalendar times are evaluated in the system's local timezone. Set the
+# server's timezone to America/New_York first
+# (`timedatectl set-timezone America/New_York`) so "16:30" below is already
+# correct wall-clock time year-round, including across DST changes.
+#
+# Install (as root, after editing paths in the matching .service file):
+#   cp deploy/systemd/stock-automation.service deploy/systemd/stock-automation.timer /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now stock-automation.timer
+[Unit]
+Description=Run stock-dashboard automation daily after US market close
+
+[Timer]
+OnCalendar=Mon..Fri 16:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

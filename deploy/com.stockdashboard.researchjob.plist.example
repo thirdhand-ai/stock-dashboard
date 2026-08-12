@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd template for the Phase 11 RESEARCH-ONLY job - NOT installed
+  or loaded by anything in this repo, and NOT the same LaunchAgent as
+  com.stockdashboard.dailyrun.plist.example (the production job). This file
+  is inert until explicitly approved, copied into ~/Library/LaunchAgents/,
+  and loaded with `launchctl load` (see deploy/README.md).
+
+  Runs `strategy_lab.run_research_job` only - a module with no "send" flag
+  (unlike the production job), no trade argument, and no code path that can reach Discord or order
+  submission (see tests/test_strategy_lab.py's structural safety tests,
+  which scan strategy_lab/research_automation.py and this job's entry point
+  too). It records immutable prospective observations/events and matures
+  legitimately-available outcomes; nothing more.
+
+  Scheduled ~15 minutes after the production job (16:30 ET) so production's
+  daily refresh has normally already completed. strategy_lab.research_automation's
+  own freshness gate independently re-verifies that today's PRODUCTION run
+  actually succeeded (db.run_history_repository, read-only) before creating
+  any observation - if it didn't (e.g. the 2026-08-12 DNS outage), the job
+  records status=skipped_no_fresh_market_data and does nothing else. That
+  gate does not depend on this schedule being exactly right.
+
+  Before use: replace every /Users/tylertyson/stock-dashboard path below
+  with your actual project path, and confirm your Mac's system timezone is
+  America/New_York (or adjust Hour/Minute) - launchd fires
+  StartCalendarInterval in the system's local time.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.stockdashboard.researchjob</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tylertyson/stock-dashboard/venv/bin/python</string>
+        <string>-m</string>
+        <string>strategy_lab.run_research_job</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tylertyson/stock-dashboard</string>
+
+    <!-- Weekday: 1=Monday .. 5=Friday (launchd convention). 16:45 local
+         time Mon-Fri, ~15 minutes after the production job's 16:30 slot.
+         strategy_lab.research_automation's own NYSE-calendar check and
+         production-freshness gate independently re-verify before doing any
+         work, so a firing on a market holiday or after a failed production
+         run is a safe, idempotent no-op. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tylertyson/stock-dashboard/logs/research_automation.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tylertyson/stock-dashboard/logs/research_automation.log</string>
+</dict>
+</plist>

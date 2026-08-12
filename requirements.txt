@@ -1,0 +1,31 @@
+# --- Core / config ---
+python-dotenv==1.0.1
+pandas>=2.3.2,<3
+numpy>=2.2.6,<3
+
+# --- Data sources (Phase 1) ---
+yfinance==0.2.51
+alpaca-py==0.33.1
+finnhub-python==2.4.20
+requests==2.32.3
+
+# --- Indicators / signal engine (Phase 2) ---
+pandas-ta==0.4.71b0
+
+# --- Backtesting (Phase 3) ---
+Backtesting==0.3.3
+
+# --- Dashboard (Phase 4) ---
+streamlit==1.40.2
+plotly==5.24.1
+watchdog==6.0.0  # reliable local dev file-watching for `streamlit run`
+
+# --- Alerts (Phase 5) ---
+# requests (already listed above) is used for the Discord webhook
+
+# --- Automation / scheduling (Phase 6) ---
+schedule==1.2.2
+pandas_market_calendars==5.4.0  # authoritative NYSE trading-day/holiday calendar
+
+# --- Testing ---
+pytest==8.3.4

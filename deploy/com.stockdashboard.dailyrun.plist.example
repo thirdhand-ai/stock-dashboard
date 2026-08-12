@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd template for the daily automation run - NOT installed or
+  loaded by anything in this repo. This file is inert until you copy it
+  into ~/Library/LaunchAgents/ and run `launchctl load` yourself (see
+  deploy/README.md for the exact steps). The Weekday restriction below
+  covers Mon-Fri only; automation/trading_calendar.py (backed by
+  pandas_market_calendars' real NYSE calendar) is a second, independent
+  check inside the pipeline itself that also skips U.S. market holidays
+  Mon-Fri, so a holiday firing is still a safe no-op even though launchd
+  itself doesn't know about holidays.
+
+  Before use: replace every /Users/tylertyson/stock-dashboard path below
+  with your actual project path, and confirm your Mac's system timezone
+  is America/New_York (or adjust Hour/Minute for your timezone) - launchd
+  fires StartCalendarInterval in the system's local time.
+
+  REAL DISCORD DELIVERY IS ENABLED below via the send flag (two dashes,
+  then "send"). This does not itself cause any alert to fire -
+  alerts/engine.py's crossing/stage-advance logic alone still decides
+  that. The send flag only lets an alert the existing logic already
+  decided to fire also reach Discord, instead of being recorded as a
+  dry-run event only. To go back to dry-run, remove that flag string
+  from the ProgramArguments array below.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.stockdashboard.dailyrun</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tylertyson/stock-dashboard/venv/bin/python</string>
+        <string>-m</string>
+        <string>automation.run_daily</string>
+        <string>--send</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tylertyson/stock-dashboard</string>
+
+    <!-- Weekday: 1=Monday .. 5=Friday (launchd convention). Combined with
+         Hour/Minute, this fires at 16:30 local time Mon-Fri; the pipeline's
+         own NYSE calendar check (automation/trading_calendar.py) still
+         independently verifies before doing any work, so a firing on a
+         market holiday is a safe, idempotent no-op rather than a bug. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tylertyson/stock-dashboard/logs/automation.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tylertyson/stock-dashboard/logs/automation.log</string>
+</dict>
+</plist>
+

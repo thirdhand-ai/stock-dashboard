@@ -1,0 +1,537 @@
+{
+  "analysis_version": "phase10-v1",
+  "phase": 10,
+  "generated_at": "2026-08-12T21:06:14.134620+00:00",
+  "dataset": {
+    "coverage": {
+      "n_tickers": 92,
+      "n_failed": 0,
+      "failed": [],
+      "date_range": [
+        "2021-08-13",
+        "2026-08-12"
+      ],
+      "total_observations": 115368
+    },
+    "universe_size": 90
+  },
+  "experiment_definitions": {
+    "original_frozen_strategy": "Phase 9 CONTROL, unmodified: entry stage>=trend AND score>=70.0; exit stage<trend OR score<=40.0. No regime condition.",
+    "bullish_entry_only": "Original frozen entry AND market regime == bullish_trend at entry. Exit: original frozen exit only (regime not part of exit).",
+    "bullish_entry_and_exit": "Original frozen entry AND market regime == bullish_trend at entry. Exit: original frozen exit OR regime leaves bullish_trend."
+  },
+  "friction_assumptions": {
+    "idealized": {
+      "label": "idealized (no friction)",
+      "slippage_bps": 0.0,
+      "commission_pct": 0.0,
+      "next_session_entry": true
+    },
+    "reasonable": {
+      "label": "reasonable friction",
+      "slippage_bps": 5.0,
+      "commission_pct": 0.001,
+      "next_session_entry": true
+    }
+  },
+  "regime_distribution": [
+    {
+      "label": "bullish_trend",
+      "trading_days": 646,
+      "pct_of_sample": 61.23
+    },
+    {
+      "label": "neutral_mixed",
+      "trading_days": 267,
+      "pct_of_sample": 25.31
+    },
+    {
+      "label": "bearish_trend",
+      "trading_days": 40,
+      "pct_of_sample": 3.79
+    },
+    {
+      "label": "elevated_volatility_risk_off",
+      "trading_days": 102,
+      "pct_of_sample": 9.67
+    }
+  ],
+  "bullish_sufficiently_selective": "True",
+  "variant_results_summary": {
+    "original_frozen_strategy": {
+      "idealized": {
+        "cumulative_return_pct": 14.144703555555548,
+        "robustness": {
+          "n_tickers": 90,
+          "pct_profitable": 64.4,
+          "mean_return_pct": 14.14,
+          "median_return_pct": 6.33,
+          "std_return_pct": 40.57,
+          "pct_beating_own_buy_hold": 21.1,
+          "best_5": [
+            {
+              "ticker": "MU",
+              "total_return_pct": 216.01729999999995,
+              "num_trades": 20
+            },
+            {
+              "ticker": "NVDA",
+              "total_return_pct": 204.94630000000004,
+              "num_trades": 19
+            },
+            {
+              "ticker": "AMD",
+              "total_return_pct": 139.87775000000008,
+              "num_trades": 17
+            },
+            {
+              "ticker": "GE",
+              "total_return_pct": 115.35829999999991,
+              "num_trades": 23
+            },
+            {
+              "ticker": "INTC",
+              "total_return_pct": 83.19029999999995,
+              "num_trades": 16
+            }
+          ],
+          "worst_5": [
+            {
+              "ticker": "HON",
+              "total_return_pct": -22.93530000000004,
+              "num_trades": 20
+            },
+            {
+              "ticker": "PYPL",
+              "total_return_pct": -26.92749999999998,
+              "num_trades": 12
+            },
+            {
+              "ticker": "PEP",
+              "total_return_pct": -27.757000000000055,
+              "num_trades": 19
+            },
+            {
+              "ticker": "ELV",
+              "total_return_pct": -33.88270000000002,
+              "num_trades": 16
+            },
+            {
+              "ticker": "ADBE",
+              "total_return_pct": -34.87970000000002,
+              "num_trades": 14
+            }
+          ],
+          "top5_share_of_positive_return_pct": 45.2,
+          "bottom5_share_of_negative_return_pct": 35.8,
+          "concentration_flag": false
+        },
+        "holding_period": {
+          "mean_exposure_time_pct": 20.5,
+          "mean_avg_trade_duration_days": 20.3,
+          "mean_trades_per_ticker": 17.8,
+          "total_trades": 1598
+        }
+      },
+      "reasonable": {
+        "cumulative_return_pct": 11.090083402888862,
+        "robustness": {
+          "n_tickers": 90,
+          "pct_profitable": 57.8,
+          "mean_return_pct": 11.09,
+          "median_return_pct": 3.34,
+          "std_return_pct": 39.31,
+          "pct_beating_own_buy_hold": 18.9,
+          "best_5": [
+            {
+              "ticker": "MU",
+              "total_return_pct": 205.63587769999984,
+              "num_trades": 20
+            },
+            {
+              "ticker": "NVDA",
+              "total_return_pct": 196.74526309999982,
+              "num_trades": 19
+            },
+            {
+              "ticker": "AMD",
+              "total_return_pct": 134.26260722499995,
+              "num_trades": 17
+            },
+            {
+              "ticker": "GE",
+              "total_return_pct": 107.95506739999976,
+              "num_trades": 23
+            },
+            {
+              "ticker": "INTC",
+              "total_return_pct": 78.57000199999987,
+              "num_trades": 16
+            }
+          ],
+          "worst_5": [
+            {
+              "ticker": "HON",
+              "total_return_pct": -25.230899750000134,
+              "num_trades": 20
+            },
+            {
+              "ticker": "PYPL",
+              "total_return_pct": -28.201544400000024,
+              "num_trades": 12
+            },
+            {
+              "ticker": "PEP",
+              "total_return_pct": -29.657764600000107,
+              "num_trades": 19
+            },
+            {
+              "ticker": "ELV",
+              "total_return_pct": -36.16028375000007,
+              "num_trades": 16
+            },
+            {
+              "ticker": "ADBE",
+              "total_return_pct": -36.35176585000009,
+              "num_trades": 14
+            }
+          ],
+          "top5_share_of_positive_return_pct": 48.6,
+          "bottom5_share_of_negative_return_pct": 31.9,
+          "concentration_flag": false
+        },
+        "holding_period": {
+          "mean_exposure_time_pct": 20.5,
+          "mean_avg_trade_duration_days": 20.3,
+          "mean_trades_per_ticker": 17.8,
+          "total_trades": 1598
+        }
+      }
+    },
+    "bullish_entry_only": {
+      "idealized": {
+        "cumulative_return_pct": 13.67642288888884,
+        "robustness": {
+          "n_tickers": 90,
+          "pct_profitable": 64.4,
+          "mean_return_pct": 13.68,
+          "median_return_pct": 7.95,
+          "std_return_pct": 36.32,
+          "pct_beating_own_buy_hold": 22.2,
+          "best_5": [
+            {
+              "ticker": "NVDA",
+              "total_return_pct": 233.98480000000018,
+              "num_trades": 13
+            },
+            {
+              "ticker": "AMD",
+              "total_return_pct": 124.03730000000004,
+              "num_trades": 11
+            },
+            {
+              "ticker": "MU",
+              "total_return_pct": 118.02709999999996,
+              "num_trades": 18
+            },
+            {
+              "ticker": "INTC",
+              "total_return_pct": 94.37519999999994,
+              "num_trades": 14
+            },
+            {
+              "ticker": "GE",
+              "total_return_pct": 76.91560000000001,
+              "num_trades": 18
+            }
+          ],
+          "worst_5": [
+            {
+              "ticker": "UNP",
+              "total_return_pct": -20.04829999999999,
+              "num_trades": 17
+            },
+            {
+              "ticker": "PYPL",
+              "total_return_pct": -23.604700000000005,
+              "num_trades": 9
+            },
+            {
+              "ticker": "ADBE",
+              "total_return_pct": -24.538300000000028,
+              "num_trades": 11
+            },
+            {
+              "ticker": "ORCL",
+              "total_return_pct": -29.533100000000022,
+              "num_trades": 16
+            },
+            {
+              "ticker": "AVGO",
+              "total_return_pct": -33.312100000000065,
+              "num_trades": 17
+            }
+          ],
+          "top5_share_of_positive_return_pct": 40.5,
+          "bottom5_share_of_negative_return_pct": 35.7,
+          "concentration_flag": false
+        },
+        "holding_period": {
+          "mean_exposure_time_pct": 15.3,
+          "mean_avg_trade_duration_days": 21.6,
+          "mean_trades_per_ticker": 12.5,
+          "total_trades": 1122
+        }
+      },
+      "reasonable": {
+        "cumulative_return_pct": 11.532675933999936,
+        "robustness": {
+          "n_tickers": 90,
+          "pct_profitable": 60.0,
+          "mean_return_pct": 11.53,
+          "median_return_pct": 5.67,
+          "std_return_pct": 35.43,
+          "pct_beating_own_buy_hold": 22.2,
+          "best_5": [
+            {
+              "ticker": "NVDA",
+              "total_return_pct": 227.46308374999984,
+              "num_trades": 13
+            },
+            {
+              "ticker": "AMD",
+              "total_return_pct": 119.95805072499999,
+              "num_trades": 11
+            },
+            {
+              "ticker": "MU",
+              "total_return_pct": 109.43100559999985,
+              "num_trades": 18
+            },
+            {
+              "ticker": "INTC",
+              "total_return_pct": 90.82763939999994,
+              "num_trades": 14
+            },
+            {
+              "ticker": "GE",
+              "total_return_pct": 72.19595814999987,
+              "num_trades": 18
+            }
+          ],
+          "worst_5": [
+            {
+              "ticker": "UNP",
+              "total_return_pct": -22.066646700000064,
+              "num_trades": 17
+            },
+            {
+              "ticker": "PYPL",
+              "total_return_pct": -24.618081400000012,
+              "num_trades": 9
+            },
+            {
+              "ticker": "ADBE",
+              "total_return_pct": -25.897802100000085,
+              "num_trades": 11
+            },
+            {
+              "ticker": "ORCL",
+              "total_return_pct": -31.155279250000095,
+              "num_trades": 16
+            },
+            {
+              "ticker": "AVGO",
+              "total_return_pct": -35.520799350000125,
+              "num_trades": 17
+            }
+          ],
+          "top5_share_of_positive_return_pct": 42.5,
+          "bottom5_share_of_negative_return_pct": 33.1,
+          "concentration_flag": false
+        },
+        "holding_period": {
+          "mean_exposure_time_pct": 15.3,
+          "mean_avg_trade_duration_days": 21.6,
+          "mean_trades_per_ticker": 12.5,
+          "total_trades": 1122
+        }
+      }
+    },
+    "bullish_entry_and_exit": {
+      "idealized": {
+        "cumulative_return_pct": 13.214086222222242,
+        "robustness": {
+          "n_tickers": 90,
+          "pct_profitable": 65.6,
+          "mean_return_pct": 13.21,
+          "median_return_pct": 7.11,
+          "std_return_pct": 34.89,
+          "pct_beating_own_buy_hold": 21.1,
+          "best_5": [
+            {
+              "ticker": "NVDA",
+              "total_return_pct": 190.09690000000006,
+              "num_trades": 14
+            },
+            {
+              "ticker": "AMD",
+              "total_return_pct": 129.88500000000008,
+              "num_trades": 11
+            },
+            {
+              "ticker": "INTC",
+              "total_return_pct": 120.32624999999993,
+              "num_trades": 16
+            },
+            {
+              "ticker": "MU",
+              "total_return_pct": 118.19449999999998,
+              "num_trades": 20
+            },
+            {
+              "ticker": "TSLA",
+              "total_return_pct": 105.02429999999995,
+              "num_trades": 11
+            }
+          ],
+          "worst_5": [
+            {
+              "ticker": "NOW",
+              "total_return_pct": -19.704899999999988,
+              "num_trades": 12
+            },
+            {
+              "ticker": "ADBE",
+              "total_return_pct": -23.846750000000004,
+              "num_trades": 15
+            },
+            {
+              "ticker": "AVGO",
+              "total_return_pct": -24.03810000000005,
+              "num_trades": 19
+            },
+            {
+              "ticker": "PYPL",
+              "total_return_pct": -27.0995,
+              "num_trades": 10
+            },
+            {
+              "ticker": "ORCL",
+              "total_return_pct": -29.533100000000022,
+              "num_trades": 16
+            }
+          ],
+          "top5_share_of_positive_return_pct": 42.5,
+          "bottom5_share_of_negative_return_pct": 33.3,
+          "concentration_flag": false
+        },
+        "holding_period": {
+          "mean_exposure_time_pct": 13.8,
+          "mean_avg_trade_duration_days": 16.2,
+          "mean_trades_per_ticker": 14.8,
+          "total_trades": 1332
+        }
+      },
+      "reasonable": {
+        "cumulative_return_pct": 10.732870603555455,
+        "robustness": {
+          "n_tickers": 90,
+          "pct_profitable": 61.1,
+          "mean_return_pct": 10.73,
+          "median_return_pct": 4.54,
+          "std_return_pct": 34.19,
+          "pct_beating_own_buy_hold": 21.1,
+          "best_5": [
+            {
+              "ticker": "NVDA",
+              "total_return_pct": 184.20965569999984,
+              "num_trades": 14
+            },
+            {
+              "ticker": "AMD",
+              "total_return_pct": 125.59777107499993,
+              "num_trades": 11
+            },
+            {
+              "ticker": "INTC",
+              "total_return_pct": 115.23934364999984,
+              "num_trades": 16
+            },
+            {
+              "ticker": "MU",
+              "total_return_pct": 114.70994134999985,
+              "num_trades": 20
+            },
+            {
+              "ticker": "TSLA",
+              "total_return_pct": 102.31622694999987,
+              "num_trades": 11
+            }
+          ],
+          "worst_5": [
+            {
+              "ticker": "NOW",
+              "total_return_pct": -21.192389350000067,
+              "num_trades": 12
+            },
+            {
+              "ticker": "ADBE",
+              "total_return_pct": -24.733898175000093,
+              "num_trades": 15
+            },
+            {
+              "ticker": "AVGO",
+              "total_return_pct": -26.57702455000018,
+              "num_trades": 19
+            },
+            {
+              "ticker": "PYPL",
+              "total_return_pct": -28.171625300000002,
+              "num_trades": 10
+            },
+            {
+              "ticker": "ORCL",
+              "total_return_pct": -31.155279250000095,
+              "num_trades": 16
+            }
+          ],
+          "top5_share_of_positive_return_pct": 45.7,
+          "bottom5_share_of_negative_return_pct": 30.1,
+          "concentration_flag": false
+        },
+        "holding_period": {
+          "mean_exposure_time_pct": 13.8,
+          "mean_avg_trade_duration_days": 16.2,
+          "mean_trades_per_ticker": 14.8,
+          "total_trades": 1332
+        }
+      }
+    }
+  },
+  "bootstrap_results": {
+    "control_vs_a": {
+      "n_a": 90,
+      "n_b": 90,
+      "mean_diff": 0.4425925311111385,
+      "ci_low": -11.168922837434689,
+      "ci_high": 11.36737794575418
+    },
+    "control_vs_b": {
+      "n_a": 90,
+      "n_b": 90,
+      "mean_diff": -0.35721279933332006,
+      "ci_low": -11.720347416211094,
+      "ci_high": 10.062644124038874
+    },
+    "bullish_vs_nonbullish_event_20d": {
+      "n_a": 4084,
+      "n_b": 1750,
+      "mean_diff": 0.0024232940870924247,
+      "ci_low": -0.002767361259738971,
+      "ci_high": 0.007432791939828492
+    }
+  },
+  "production_config_unchanged": true,
+  "frozen_at": "2026-08-12T21:08:24.105948+00:00"
+}

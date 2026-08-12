@@ -1,0 +1,15 @@
+# systemd oneshot unit for one automation pipeline run, triggered by
+# stock-automation.timer. EXAMPLE - not installed by anything in this repo.
+[Unit]
+Description=Stock Dashboard daily automation run
+After=network.target
+
+[Service]
+Type=oneshot
+User=stockdash
+WorkingDirectory=/opt/stock-dashboard
+# Dry-run as written (matches automation/run_daily.py's own safe default).
+# Add --send only once you've decided you want real Discord delivery from
+# the scheduled job.
+ExecStart=/opt/stock-dashboard/venv/bin/python -m automation.run_daily
+EnvironmentFile=/opt/stock-dashboard/.env

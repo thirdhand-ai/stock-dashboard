@@ -1,0 +1,62 @@
+{
+  "computed_at": "2026-08-12T22:15:09.039441+00:00",
+  "file_hashes": {
+    "signals/config.py": "793249abd2dec9106b2185bdb65a3bbf8838e1b9c88a3a85ece5593493a0545a",
+    "backtest/config.py": "b15c21cdfb962da73e1afee9dbe03909a203a9af35530ba1bd205d513f9dd692",
+    "trading/config.py": "d73e5e607364d3e9ab1ab097cdb0af9169f184727bb2a5e2ea138b8113707d08",
+    "config/settings.py": "00e11c60265f01281dd0812748a58d83210e2509df0b316aebc75d07f7060af3",
+    "alerts/config.py": "0da8ad9c28981b5c62e03e04adde838c1e2929388a72b4e04548926a92dec4c7",
+    "deploy/com.stockdashboard.dailyrun.plist.example": "6e9b98a3438ffa91f63734c40d32509ef29aa0bea6e2505c77b527696e8c3fee"
+  },
+  "structured_values": {
+    "signal_thresholds": {
+      "adx_trend_threshold": 25.0,
+      "rsi_bullish_min": 50.0,
+      "rsi_overbought": 70.0,
+      "volume_ratio_min": 1.2
+    },
+    "signal_weights": {
+      "trend_adx_points": 15.0,
+      "trend_ma_points": 15.0,
+      "momentum_rsi_points": 20.0,
+      "momentum_macd_points": 20.0,
+      "volume_points": 30.0
+    },
+    "backtest_rules": {
+      "entry_min_stage": "trend",
+      "entry_min_score": 70.0,
+      "exit_stage_floor": "trend",
+      "exit_max_score": 40.0
+    },
+    "backtest_execution": {
+      "initial_cash": 10000.0,
+      "commission": 0.001
+    },
+    "risk_config": {
+      "max_position_size_pct": 0.1,
+      "max_total_exposure_pct": 0.6,
+      "max_open_positions": 6,
+      "long_only": true,
+      "allow_margin": false,
+      "allow_short": false,
+      "allow_options": false,
+      "allow_averaging_down": false,
+      "allow_duplicate_ticker_position": false
+    },
+    "alert_rules": {
+      "score_threshold": 70.0,
+      "enable_score_crossing": true,
+      "enable_stage_advance": true,
+      "cooldown_minutes": 60
+    },
+    "watchlist": [
+      "AAPL",
+      "MSFT",
+      "GOOGL",
+      "AMZN",
+      "NVDA",
+      "TSLA",
+      "META"
+    ]
+  }
+}

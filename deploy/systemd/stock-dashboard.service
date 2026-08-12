@@ -1,0 +1,22 @@
+# systemd unit for the Streamlit dashboard on a persistent-disk VPS.
+# EXAMPLE - not installed by anything in this repo.
+#
+# Install (as root, after editing the paths below):
+#   cp deploy/systemd/stock-dashboard.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now stock-dashboard
+[Unit]
+Description=Stock Dashboard (Streamlit)
+After=network.target
+
+[Service]
+Type=simple
+User=stockdash
+WorkingDirectory=/opt/stock-dashboard
+ExecStart=/opt/stock-dashboard/deploy/run_dashboard.sh
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/opt/stock-dashboard/.env
+
+[Install]
+WantedBy=multi-user.target
