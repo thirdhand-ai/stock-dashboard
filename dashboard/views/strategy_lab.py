@@ -16,9 +16,12 @@ from dashboard import components
 from dashboard.charts import build_bar_chart, build_drawdown_chart, build_multi_line_chart
 from dashboard.data import (
     get_amzn_monitor_status,
+    get_experiment_registry,
+    get_experiment_registry_drift,
     get_phase10_results,
     get_phase11_results,
     get_production_health,
+    get_prospective_evidence_status,
     get_prospective_summary,
     get_research_run_history,
     get_strategy_lab_results,
@@ -704,6 +707,99 @@ def _render_realistic_portfolio():
         st.caption(comparison.get("source", ""))
 
 
+# --- Phase 12 ---
+
+
+def _render_experiment_registry():
+    st.header("Phase 12 — Experiment Governance Registry")
+    st.caption("Immutable methodology metadata. A real change to hypothesis, "
+               "methodology, or frozen config always requires a NEW experiment_id "
+               "— this table can never be edited in place for those fields.")
+    df = get_experiment_registry()
+    if df.empty:
+        components.empty_state("No experiments registered",
+            "Run `python -m ops.register_phase10_11_experiments`.", icon="📋")
+        return
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    drift = get_experiment_registry_drift()   # new getter wrapping check_active_experiments_config_drift
+    drifted = {k: v for k, v in drift.items() if v["drifted"]}
+    if drifted:
+        st.error(f"⚠️ Config drift detected for ACTIVE experiment(s): {list(drifted.keys())}", icon="🚨")
+
+
+def _render_prospective_evidence_progress():
+    st.header("Phase 12 — Prospective Evidence Progress (trading-day based)")
+    st.caption(
+        "Distinct from the event-count evidence label in the Prospective "
+        "Validation section above (strategy_lab.prospective_events.evidence_label). "
+        "This measures distinct genuinely-forward-observed trading days."
+    )
+    status = get_prospective_evidence_status()
+    n = status["n_prospective_trading_days"]
+    label = status["status"]
+    st.metric("Prospective trading days observed", n)
+    if label == "INSUFFICIENT_DATA":
+        st.warning("**INSUFFICIENT_DATA**", icon="🔬")
+    elif label == "EARLY_EVIDENCE":
+        st.info("**EARLY_EVIDENCE**", icon="🔬")
+    else:
+        st.success("**EVALUATION_READY**", icon="🔬")
+
+    st.subheader("Prospective vs. retrospective comparison")
+    if label == "INSUFFICIENT_DATA":
+        st.warning("INSUFFICIENT PROSPECTIVE EVIDENCE", icon="⚠️")
+        return   # no chart, no table — nothing further rendered
+
+    # EARLY_EVIDENCE or EVALUATION_READY: render the comparison, using only
+    # already-existing, already-computed pure reads (strategy_lab.prospective's
+    # own realized-returns join, and the Phase 9 research cache's bucket
+    # returns) - never a new computation of retrospective performance.
+    if label == "EARLY_EVIDENCE":
+        st.caption("⚠️ Small sample (EARLY_EVIDENCE) — directional only, not yet a robust comparison.")
+
+    try:
+        from db.database import db_session
+        from strategy_lab.prospective import compute_realized_returns
+        with db_session() as conn:
+            realized = compute_realized_returns(conn)
+    except Exception as e:
+        st.caption(f"Prospective realized-return comparison unavailable: {e}")
+        return
+
+    if realized.empty:
+        st.caption("No matured prospective observations old enough yet to compute realized forward returns.")
+        return
+
+    horizon = _horizon_picker("prospective_comparison_horizon")
+    return_col = f"realized_return_{horizon}d"
+    if return_col not in realized.columns:
+        st.caption(f"No {horizon}-day realized returns available yet.")
+        return
+
+    control_rows = realized[(realized["control_entry_signal"] == 1) & realized[return_col].notna()]
+    if control_rows.empty:
+        st.caption("No matured CONTROL entry-signal observations at this horizon yet.")
+        return
+
+    prospective_mean_pct = round(float(control_rows[return_col].mean()) * 100, 2)
+    comp_rows = [{
+        "Source": "Prospective (forward-observed, CONTROL entry signal)",
+        "n": len(control_rows), "Mean return %": prospective_mean_pct,
+    }]
+
+    p9 = get_strategy_lab_results()
+    bucket_scores = p9.get("bucket_scores") if p9 else None
+    if bucket_scores is not None and not bucket_scores.empty:
+        sub = bucket_scores[(bucket_scores["horizon_days"] == horizon) & (bucket_scores["bucket"] == "70-84")]
+        if not sub.empty:
+            comp_rows.append({
+                "Source": "Retrospective (historical research, 70-84 score bucket)",
+                "n": int(sub["n"].iloc[0]), "Mean return %": sub["mean_return_pct"].iloc[0],
+            })
+
+    st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+
+
 def render():
     results = get_strategy_lab_results()
     _render_header(results if results else {})
@@ -782,3 +878,15 @@ def render():
     _render_prospective_validation()
     st.divider()
     _render_realistic_portfolio()
+
+    st.divider()
+    try:
+        _render_experiment_registry()
+    except Exception as e:
+        components.empty_state("Experiment registry unavailable", str(e), icon="⚠️")
+
+    st.divider()
+    try:
+        _render_prospective_evidence_progress()
+    except Exception as e:
+        components.empty_state("Prospective evidence progress unavailable", str(e), icon="⚠️")

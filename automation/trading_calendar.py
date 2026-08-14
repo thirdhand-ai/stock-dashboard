@@ -16,6 +16,7 @@ a run_history row, never a duplicate alert or corrupted state.
 """
 from datetime import date
 from functools import lru_cache
+from typing import List
 
 import pandas_market_calendars as mcal
 
@@ -49,3 +50,18 @@ def trading_sessions_elapsed(start_date: date, through_date: date) -> int:
     valid_days = calendar.valid_days(start_date=start_date.isoformat(), end_date=through_date.isoformat())
     valid_dates = {d.date() for d in valid_days}
     return sum(1 for d in valid_dates if d > start_date)
+
+
+def trading_sessions_between(start_date: date, end_date: date) -> List[date]:
+    """All NYSE trading sessions in [start_date, end_date], inclusive,
+    ascending. Pure, additive, read-only calendar helper (Phase 12 spec
+    §4.1) - a small companion to `trading_sessions_elapsed`, which only
+    returns a count; this returns the actual session dates so a caller
+    (e.g. ops/data_quality.py's gap detection) can check which specific
+    sessions have no corresponding stored data. No behavior change to any
+    existing caller of this module."""
+    if end_date < start_date:
+        return []
+    calendar = _get_calendar()
+    valid_days = calendar.valid_days(start_date=start_date.isoformat(), end_date=end_date.isoformat())
+    return sorted({d.date() for d in valid_days})

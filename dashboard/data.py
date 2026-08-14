@@ -12,6 +12,7 @@ into:
 No API credentials are read or exposed here - all data comes from the local
 SQLite database populated by the existing ingestion layer.
 """
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -473,6 +474,80 @@ def get_amzn_monitor_status():
         return get_amzn_status(conn)
 
 
+# --- Phase 12: ops (daily report / data quality / reconciliation /
+# experiment governance) getters. Same thin-caller-delegates-to-plain-
+# function convention as every getter above. ---
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_ops_daily_report() -> dict:
+    """Read-only: builds today's Phase 12 daily research report. Never
+    persists it (that's ops/run_daily_report.py's job) - a page load must
+    never write to ops_daily_reports."""
+    with db_session() as conn:
+        from ops.daily_report import build_daily_report, report_to_dict
+        return report_to_dict(build_daily_report(conn))
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_data_quality_report() -> dict:
+    """Read-only: checks watchlist price-data freshness/validity directly
+    against the `prices` table. Never calls ingestion, never mutates."""
+    with db_session() as conn:
+        from ops.data_quality import check_watchlist_quality
+        report = check_watchlist_quality(conn)
+    return dataclasses.asdict(report)
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_reconciliation_report() -> dict:
+    """Read-only comparison of local paper-trading state vs. Alpaca's
+    authoritative paper account state. Never submits/cancels/replaces/
+    closes anything."""
+    from ops.reconciliation import build_reconciliation_report
+    with db_session() as conn:
+        report = build_reconciliation_report(conn)
+    return dataclasses.asdict(report)
+
+
+@st.cache_data(ttl=STRATEGY_LAB_TTL_SECONDS, show_spinner=False)
+def get_experiment_registry() -> pd.DataFrame:
+    from ops.experiment_registry import list_experiments
+    with db_session() as conn:
+        return list_experiments(conn)
+
+
+@st.cache_data(ttl=STRATEGY_LAB_TTL_SECONDS, show_spinner=False)
+def get_experiment_registry_drift() -> dict:
+    """Read-only: for every ACTIVE experiment, whether its stored config
+    fingerprint still matches the live production config. Never writes
+    anything, never auto-retires an experiment."""
+    from ops.experiment_registry import check_active_experiments_config_drift
+    with db_session() as conn:
+        return check_active_experiments_config_drift(conn)
+
+
+@st.cache_data(ttl=STRATEGY_LAB_TTL_SECONDS, show_spinner=False)
+def get_prospective_evidence_status() -> dict:
+    """Trading-day-based prospective evidence classification (Phase 12) -
+    distinct from get_prospective_summary()'s event-count-based label."""
+    from ops.evidence_classification import classify_evidence, count_prospective_trading_days
+    with db_session() as conn:
+        n_days = count_prospective_trading_days(conn)
+    return {"n_prospective_trading_days": n_days, "status": classify_evidence(n_days)}
+
+
+@st.cache_data(ttl=STRATEGY_LAB_TTL_SECONDS, show_spinner=False)
+def get_ops_research_run_history(limit: int = 20) -> pd.DataFrame:
+    """Thin re-export identical to get_research_run_history() - kept
+    separate so dashboard/views/ops_overview.py doesn't need to import
+    strategy_lab.research_automation directly, matching this file's
+    existing "dashboard imports, views don't" convention."""
+    from strategy_lab.research_automation import load_research_run_history
+    with db_session() as conn:
+        return load_research_run_history(conn, limit=limit)
+
+
 def clear_all_caches():
     get_watchlist_overview.clear()
     get_ticker_detail.clear()
@@ -495,3 +570,10 @@ def clear_all_caches():
     get_prospective_summary.clear()
     get_research_run_history.clear()
     get_phase11_results.clear()
+    get_ops_daily_report.clear()
+    get_data_quality_report.clear()
+    get_reconciliation_report.clear()
+    get_experiment_registry.clear()
+    get_experiment_registry_drift.clear()
+    get_prospective_evidence_status.clear()
+    get_ops_research_run_history.clear()
