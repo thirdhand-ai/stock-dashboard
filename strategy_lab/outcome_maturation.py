@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS {OUTCOME_TABLE_NAME} (
 
 def ensure_schema(conn) -> None:
     conn.execute(_CREATE_TABLE_SQL)
+    # Phase 15 §1.3: additive migration for `source`/`methodology_version`/
+    # `config_fingerprint` - denormalized copies from the parent observation,
+    # matching the existing `ticker`/`observation_date` convention on this
+    # same table. Mirrors the exact PRAGMA table_info + guarded ALTER TABLE
+    # pattern used elsewhere.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({OUTCOME_TABLE_NAME})").fetchall()}
+    if "source" not in cols:
+        conn.execute(f"ALTER TABLE {OUTCOME_TABLE_NAME} ADD COLUMN source TEXT")
+    if "methodology_version" not in cols:
+        conn.execute(f"ALTER TABLE {OUTCOME_TABLE_NAME} ADD COLUMN methodology_version TEXT")
+    if "config_fingerprint" not in cols:
+        conn.execute(f"ALTER TABLE {OUTCOME_TABLE_NAME} ADD COLUMN config_fingerprint TEXT")
     conn.commit()
 
 
@@ -62,20 +74,38 @@ class MaturationOutcome:
     status: str
     realized_return: Optional[float] = None
     exit_date: Optional[str] = None
+    source: Optional[str] = None
+    methodology_version: Optional[str] = None
+    config_fingerprint: Optional[str] = None
 
 
 def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dict) -> MaturationOutcome:
     obs_date = date.fromisoformat(obs_row["observation_date"])
     elapsed = trading_sessions_elapsed(obs_date, today)
 
+    # Phase 15 §1.3: denormalized provenance, copied verbatim from the
+    # observation row's OWN stored values - never recomputed at maturation
+    # time. A legacy observation (source/methodology_version/
+    # config_fingerprint all NULL, e.g. the real id=1 AAPL row) simply
+    # propagates NULL onto every outcome it matures, never fabricated.
+    prov_source = obs_row["source"] if "source" in obs_row and obs_row["source"] else None
+    prov_methodology_version = (
+        obs_row["methodology_version"] if "methodology_version" in obs_row and obs_row["methodology_version"] else None
+    )
+    prov_config_fingerprint = (
+        obs_row["config_fingerprint"] if "config_fingerprint" in obs_row and obs_row["config_fingerprint"] else None
+    )
+
     if elapsed < horizon_days:
         return MaturationOutcome(
             observation_id=int(obs_row["id"]), ticker=obs_row["ticker"],
             observation_date=obs_row["observation_date"], horizon_days=horizon_days, status=STATUS_PENDING,
+            source=prov_source, methodology_version=prov_methodology_version,
+            config_fingerprint=prov_config_fingerprint,
         )
 
     ticker = obs_row["ticker"]
-    source = obs_row["source"] if "source" in obs_row and obs_row["source"] else None
+    source = prov_source
     cache_key = (ticker, source)
     if cache_key not in price_cache:
         price_cache[cache_key] = load_price_history(conn, ticker, source=source).sort_values("date").reset_index(drop=True)
@@ -85,6 +115,8 @@ def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dic
         return MaturationOutcome(
             observation_id=int(obs_row["id"]), ticker=ticker, observation_date=obs_row["observation_date"],
             horizon_days=horizon_days, status=STATUS_UNAVAILABLE,
+            source=prov_source, methodology_version=prov_methodology_version,
+            config_fingerprint=prov_config_fingerprint,
         )
 
     date_index = {d: i for i, d in enumerate(price_df["date"])}
@@ -99,6 +131,8 @@ def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dic
         return MaturationOutcome(
             observation_id=int(obs_row["id"]), ticker=ticker, observation_date=obs_row["observation_date"],
             horizon_days=horizon_days, status=STATUS_UNAVAILABLE,
+            source=prov_source, methodology_version=prov_methodology_version,
+            config_fingerprint=prov_config_fingerprint,
         )
 
     entry_price = float(price_df.at[idx, "close"])
@@ -109,7 +143,21 @@ def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dic
         observation_id=int(obs_row["id"]), ticker=ticker, observation_date=obs_row["observation_date"],
         horizon_days=horizon_days, status=STATUS_MATURED,
         realized_return=realized_return, exit_date=str(price_df.at[exit_idx, "date"]),
+        source=prov_source, methodology_version=prov_methodology_version,
+        config_fingerprint=prov_config_fingerprint,
     )
+
+
+def compute_outcome_for_horizon(
+    conn, obs_row, horizon_days: int, today: date, price_cache: Optional[dict] = None,
+) -> MaturationOutcome:
+    """Public alias for _compute_one - pure read+compute, no
+    conn.execute/commit anywhere in this function or anything it calls
+    (load_price_history is itself read-only). Exists so
+    ops/correction_impact_audit.py can deterministically recompute a single
+    outcome without duplicating this logic and without importing _persist or
+    mature_outcomes."""
+    return _compute_one(conn, obs_row, horizon_days, today, price_cache if price_cache is not None else {})
 
 
 def _persist(conn, outcome: MaturationOutcome) -> None:
@@ -117,17 +165,27 @@ def _persist(conn, outcome: MaturationOutcome) -> None:
     research_prospective_observations. A pending outcome can be revisited
     (re-upserted) as time passes and it matures; a matured outcome, once
     computed from immutable price history, is stable and re-upserting it
-    is idempotent (same inputs, same output)."""
+    is idempotent (same inputs, same output).
+
+    Phase 15 §1.3: also (re-)persists `source`/`methodology_version`/
+    `config_fingerprint`, always re-derived from the same immutable
+    observation row on every call - safe/idempotent in DO UPDATE."""
     conn.execute(
         f"""
-        INSERT INTO {OUTCOME_TABLE_NAME} (observation_id, ticker, observation_date, horizon_days, status, realized_return, exit_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO {OUTCOME_TABLE_NAME} (
+            observation_id, ticker, observation_date, horizon_days, status, realized_return, exit_date,
+            source, methodology_version, config_fingerprint
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(observation_id, horizon_days) DO UPDATE SET
             status=excluded.status, realized_return=excluded.realized_return,
-            exit_date=excluded.exit_date, matured_at=datetime('now')
+            exit_date=excluded.exit_date, matured_at=datetime('now'),
+            source=excluded.source, methodology_version=excluded.methodology_version,
+            config_fingerprint=excluded.config_fingerprint
         """,
         (outcome.observation_id, outcome.ticker, outcome.observation_date, outcome.horizon_days,
-         outcome.status, outcome.realized_return, outcome.exit_date),
+         outcome.status, outcome.realized_return, outcome.exit_date,
+         outcome.source, outcome.methodology_version, outcome.config_fingerprint),
     )
 
 

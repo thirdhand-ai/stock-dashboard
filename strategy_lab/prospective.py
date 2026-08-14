@@ -84,6 +84,11 @@ def ensure_schema(conn) -> None:
         conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN source TEXT")
     if "methodology_version" not in cols:
         conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN methodology_version TEXT")
+    # Phase 15 §1.1: additive migration for a DB created before
+    # `config_fingerprint` existed - same ADD COLUMN pattern, no existing
+    # row is ever touched.
+    if "config_fingerprint" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN config_fingerprint TEXT")
     conn.commit()
 
 
@@ -93,12 +98,16 @@ def record_observation(
     experiment_b_entry_signal: bool, adx: Optional[float], rsi: Optional[float], macd: Optional[float],
     macd_signal: Optional[float], volume_ratio: Optional[float], close: Optional[float],
     source: Optional[str] = None, methodology_version: str = METHODOLOGY_VERSION,
+    config_fingerprint: Optional[str] = None,
 ) -> bool:
     """Insert-only. A pre-existing (ticker, observation_date) row is left
     completely untouched (DO NOTHING) - this function can never overwrite an
     observation once created, which is what makes it a genuine prospective
     record rather than something that could be quietly rewritten after the
-    outcome is known."""
+    outcome is known.
+
+    `config_fingerprint` (Phase 15 §1.1): defaults to None - a caller that
+    doesn't pass it gets NULL, never a guessed value."""
     ensure_schema(conn)
     cur = conn.cursor()
     cur.execute(
@@ -106,14 +115,16 @@ def record_observation(
         INSERT INTO {TABLE_NAME} (
             created_at, observation_date, ticker, score, stage, regime,
             control_entry_signal, experiment_a_entry_signal, experiment_b_entry_signal,
-            adx, rsi, macd, macd_signal, volume_ratio, close, source, methodology_version
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            adx, rsi, macd, macd_signal, volume_ratio, close, source, methodology_version,
+            config_fingerprint
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(ticker, observation_date) DO NOTHING
         """,
         (
             datetime.now(timezone.utc).isoformat(), observation_date, ticker, score, stage, regime,
             int(control_entry_signal), int(experiment_a_entry_signal), int(experiment_b_entry_signal),
             adx, rsi, macd, macd_signal, volume_ratio, close, source, methodology_version,
+            config_fingerprint,
         ),
     )
     conn.commit()
@@ -127,7 +138,9 @@ def load_observations(conn, ticker: Optional[str] = None) -> pd.DataFrame:
     return pd.read_sql_query(f"SELECT * FROM {TABLE_NAME} ORDER BY observation_date", conn)
 
 
-def build_todays_observation(conn, ticker: str, as_of_date: Optional[str] = None) -> Optional[dict]:
+def build_todays_observation(
+    conn, ticker: str, as_of_date: Optional[str] = None, config_fingerprint: Optional[str] = None,
+) -> Optional[dict]:
     """Computes (but does not record) one ticker's current signal/regime
     state, using only the production scoring engine (signals.engine.score_indicators)
     and the point-in-time regime series - the same computation the live
@@ -164,6 +177,7 @@ def build_todays_observation(conn, ticker: str, as_of_date: Optional[str] = None
         "macd_signal": indicators.macd_signal, "volume_ratio": indicators.volume_ratio, "close": indicators.close,
         "source": resolve_source(conn, ticker),
         "methodology_version": METHODOLOGY_VERSION,
+        "config_fingerprint": config_fingerprint,
     }
 
 

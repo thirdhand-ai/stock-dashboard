@@ -113,6 +113,25 @@ def record_ticker_error(conn, run_id: int, trading_date: str, reason: str,
     conn.commit()
 
 
+def _compute_config_fingerprint_safe(conn, run_id: int, trading_date: date) -> Optional[str]:
+    """Best-effort provenance capture (Phase 15 §1.4) - a fingerprinting
+    failure must never break the research job itself. Local import (mirrors
+    ops.experiment_registry.compute_config_fingerprint's own local-import
+    convention for crossing this exact package boundary) - the one
+    deliberate strategy_lab -> ops dependency edge in this codebase,
+    approved per docs/specs/phase15.md §0.5 item 3."""
+    try:
+        from ops.experiment_registry import compute_config_fingerprint
+        return compute_config_fingerprint()
+    except Exception as e:
+        logger.warning("research job: could not compute config_fingerprint for provenance: %s", e)
+        record_ticker_error(
+            conn, run_id, ticker=None, source=None, trading_date=trading_date.isoformat(),
+            reason=f"provenance: config_fingerprint computation failed: {type(e).__name__}: {e}",
+        )
+        return None
+
+
 def load_ticker_errors_for_run(conn, run_id: int):
     import pandas as pd
     ensure_ticker_errors_schema(conn)
@@ -218,11 +237,20 @@ def run_research_job(conn, today: Optional[date] = None, tickers: Optional[List[
     run_id = _start_run(conn, today)
     result = ResearchRunResult(run_id=run_id, status=STATUS_SUCCESS_RESEARCH, trading_date=today.isoformat(), tickers_attempted=len(tickers))
 
+    # Phase 15 §1.4: computed ONCE per job run, immediately after the run
+    # starts, so every observation/event this run produces shares an
+    # identical fingerprint value. Fail-open (§0.5 item 4): a failure here
+    # never fails the job - it's recorded as a diagnostic ticker error
+    # (ticker=None) and config_fingerprint stays NULL for this run.
+    config_fingerprint = _compute_config_fingerprint_safe(conn, run_id, today)
+
     for ticker in tickers:
         obs = None  # reset each iteration so a failure on this ticker never
                     # inherits the previous ticker's `obs` in the except block
         try:
-            obs = build_todays_observation(conn, ticker, as_of_date=today.isoformat())
+            obs = build_todays_observation(
+                conn, ticker, as_of_date=today.isoformat(), config_fingerprint=config_fingerprint,
+            )
             if obs is None:
                 continue
             inserted = record_observation(conn, **obs)

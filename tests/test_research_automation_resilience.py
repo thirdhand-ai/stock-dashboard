@@ -59,7 +59,7 @@ def test_partial_failure_when_one_ticker_raises_status_is_partial_failure_not_su
     today = date.today()
     _seed_successful_production_run(conn, today)
 
-    def fake_build(conn_, ticker, as_of_date=None):
+    def fake_build(conn_, ticker, as_of_date=None, config_fingerprint=None):
         if ticker == "BBB":
             raise RuntimeError("simulated indicator failure")
         return _canned_obs(ticker, today.isoformat())

@@ -12,7 +12,9 @@ import streamlit as st
 
 from dashboard import components
 from dashboard.data import (
+    get_correction_audit_report,
     get_data_quality_report,
+    get_long_term_monitoring_summary,
     get_ops_daily_report,
     get_ops_research_run_history,
     get_prospective_audit_summary,
@@ -241,6 +243,77 @@ def _render_research_cache_completeness():
         st.caption("No recorded cache corrections.")
 
 
+def _render_evidence_provenance_audit():
+    st.header("Evidence provenance / audit (Phase 15)")
+    st.caption(
+        "Methodology/config fingerprint coverage, correction-impact trail, "
+        "and long-term capture/maturity monitoring — read-only, distinct "
+        "from the operational System health section above and the "
+        "trading-day evidence progress section above it."
+    )
+    summary = get_long_term_monitoring_summary()
+
+    health = summary["operational_health"]
+    if health == "HEALTHY":
+        st.success(f"Operational health: **{health}**", icon="✅")
+    elif health == "DEGRADED":
+        st.warning(f"Operational health: **{health}**", icon="⚠️")
+    elif health == "STALE":
+        st.warning(f"Operational health: **{health}**", icon="🕒")
+    else:
+        st.error(f"Operational health: **{health}**", icon="🚨")
+
+    capture = summary["capture_rate"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Capture rate (trailing window)", f"{capture['capture_rate_pct']}%" if capture["capture_rate_pct"] is not None else "n/a")
+    c2.metric("Consecutive missed days", summary["consecutive_missed_days"])
+    c3.metric("Sessions considered (capture)", capture["window_sessions_considered"])
+    rates = summary["research_job_rates"]
+    c4.metric("Research job success rate", f"{rates['success_rate_pct']}%" if rates["success_rate_pct"] is not None else "n/a")
+
+    st.markdown("**Research job rates (trailing window)**")
+    st.dataframe(pd.DataFrame([rates]), use_container_width=True, hide_index=True)
+
+    st.markdown("**Maturity lag by horizon**")
+    lag = summary.get("maturity_lag_by_horizon") or {}
+    if lag:
+        st.dataframe(pd.DataFrame(lag).T, use_container_width=True)
+    else:
+        st.caption("No matured outcomes yet.")
+
+    st.markdown("**Provenance coverage**")
+    coverage = summary["provenance_coverage"]
+    pc1, pc2, pc3 = st.columns(3)
+    pc1.metric("Observations with fingerprint", coverage["observations_with_fingerprint"])
+    pc2.metric("Observations UNKNOWN_LEGACY", coverage["observations_unknown_legacy"])
+    pc3.metric("Unregistered fingerprints", coverage["unregistered_fingerprint_count"])
+    st.caption(
+        "UNKNOWN_LEGACY = observation recorded before Phase 15's provenance columns existed — never "
+        "backfilled or guessed. One fingerprint can legitimately match multiple experiment_ids "
+        "(CONTROL/A/B share infra config), so by-experiment counts below are not mutually exclusive."
+    )
+    if coverage["by_experiment_id"]:
+        st.dataframe(
+            pd.DataFrame(list(coverage["by_experiment_id"].items()), columns=["experiment_id", "observation_count"]),
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.caption("No provenance-fingerprinted observations registered to an experiment yet.")
+
+    st.markdown("**Cache-correction counts**")
+    counts = summary["correction_counts"]
+    cc1, cc2 = st.columns(2)
+    cc1.metric("Total corrections", counts["total"])
+    cc2.metric("Affecting frozen artifacts", counts["affecting_frozen_artifacts"])
+
+    st.markdown("**Correction-impact trail**")
+    corrections = get_correction_audit_report()
+    if not corrections.empty:
+        st.dataframe(corrections, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No corrections recorded — no correction-impact trail to show.")
+
+
 def _render_automation_history():
     st.header("Recent automation history")
     col1, col2 = st.columns(2)
@@ -333,6 +406,11 @@ def render():
         _render_research_cache_completeness()
     except Exception as e:
         components.empty_state("Research cache completeness report unavailable", str(e), icon="⚠️")
+    st.divider()
+    try:
+        _render_evidence_provenance_audit()
+    except Exception as e:
+        components.empty_state("Evidence provenance / audit unavailable", str(e), icon="⚠️")
     st.divider()
     _render_automation_history()
     st.divider()

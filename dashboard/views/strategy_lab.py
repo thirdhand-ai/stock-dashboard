@@ -16,8 +16,10 @@ from dashboard import components
 from dashboard.charts import build_bar_chart, build_drawdown_chart, build_multi_line_chart
 from dashboard.data import (
     get_amzn_monitor_status,
+    get_correction_audit_report,
     get_experiment_registry,
     get_experiment_registry_drift,
+    get_long_term_monitoring_summary,
     get_phase10_results,
     get_phase11_results,
     get_production_health,
@@ -865,6 +867,92 @@ def _render_prospective_evidence_progress():
     st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
 
 
+def _render_evidence_provenance_detail():
+    st.header("Phase 15 — Evidence Provenance / Audit Detail")
+    st.caption(
+        "Methodology/config-fingerprint provenance detail and the "
+        "correction-impact trail — read-only. Shown alongside, never merged "
+        "with, the trading-day evidence-sufficiency status just above."
+    )
+
+    from db.database import db_session
+    from ops.evidence_provenance import label_provenance_value
+    from strategy_lab.prospective import load_observations
+
+    st.subheader("Methodology / config-fingerprint eras")
+    try:
+        with db_session() as conn:
+            observations = load_observations(conn)
+    except Exception as e:
+        st.caption(f"Provenance era summary unavailable: {e}")
+        observations = pd.DataFrame()
+
+    if observations.empty:
+        st.caption("No recorded observations yet.")
+    else:
+        obs = observations.copy()
+        obs["_fingerprint_label"] = obs["config_fingerprint"].apply(label_provenance_value)
+        era_rows = []
+        for label, group in obs.groupby("_fingerprint_label"):
+            versions = sorted({v for v in group["methodology_version"] if v})
+            era_rows.append({
+                "config_fingerprint": label,
+                "methodology_version(s)": ", ".join(versions) if versions else label_provenance_value(None),
+                "first_observation_date": group["observation_date"].min(),
+                "last_observation_date": group["observation_date"].max(),
+                "n_observations": int(len(group)),
+            })
+        st.dataframe(pd.DataFrame(era_rows), use_container_width=True, hide_index=True)
+
+    st.subheader("Provenance coverage by experiment")
+    try:
+        summary = get_long_term_monitoring_summary()
+        coverage = summary["provenance_coverage"]
+    except Exception as e:
+        st.caption(f"Provenance coverage unavailable: {e}")
+        coverage = None
+    if coverage:
+        st.caption(
+            "One config_fingerprint can legitimately match MULTIPLE experiment_ids "
+            "(CONTROL/A/B share the same infra-config fingerprint today) — counts below "
+            "are NOT mutually exclusive."
+        )
+        if coverage["by_experiment_id"]:
+            st.dataframe(
+                pd.DataFrame(
+                    list(coverage["by_experiment_id"].items()), columns=["experiment_id", "observation_count"],
+                ),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.caption("No provenance-fingerprinted observations registered to an experiment yet.")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Observations with fingerprint", coverage["observations_with_fingerprint"])
+        c2.metric("Observations UNKNOWN_LEGACY", coverage["observations_unknown_legacy"])
+        c3.metric("Unregistered fingerprints", coverage["unregistered_fingerprint_count"])
+
+    st.subheader("Correction history + affected outcomes")
+    corrections = get_correction_audit_report()   # same getter as the Operations page — no duplicate query
+    if not corrections.empty:
+        st.dataframe(corrections, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No corrections recorded — no correction-impact trail to show.")
+
+    st.subheader("Current evidence status (reference only)")
+    st.caption(
+        "The SAME INSUFFICIENT_DATA/EARLY_EVIDENCE/EVALUATION_READY status shown in the "
+        "Prospective Evidence Progress section above (evidence SUFFICIENCY) — shown here for "
+        "reference only, never merged with this page's provenance/operational-health metrics "
+        "(pipeline RELIABILITY, a different domain)."
+    )
+    try:
+        status = get_prospective_evidence_status()
+        st.metric("Prospective trading days observed", status["n_prospective_trading_days"])
+        st.write(f"Status: **{status['status']}**")
+    except Exception as e:
+        st.caption(f"Evidence status unavailable: {e}")
+
+
 def render():
     results = get_strategy_lab_results()
     _render_header(results if results else {})
@@ -960,3 +1048,9 @@ def render():
         _render_prospective_evidence_progress()
     except Exception as e:
         components.empty_state("Prospective evidence progress unavailable", str(e), icon="⚠️")
+
+    st.divider()
+    try:
+        _render_evidence_provenance_detail()
+    except Exception as e:
+        components.empty_state("Evidence provenance / audit detail unavailable", str(e), icon="⚠️")

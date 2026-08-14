@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS {EVENT_TABLE_NAME} (
 
 def ensure_schema(conn) -> None:
     conn.execute(_CREATE_TABLE_SQL)
+    # Phase 15 §1.2: additive migration for `source`/`config_fingerprint` -
+    # mirrors strategy_lab/prospective.py's exact PRAGMA table_info +
+    # guarded ALTER TABLE pattern. No existing row is ever touched.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({EVENT_TABLE_NAME})").fetchall()}
+    if "source" not in cols:
+        conn.execute(f"ALTER TABLE {EVENT_TABLE_NAME} ADD COLUMN source TEXT")
+    if "config_fingerprint" not in cols:
+        conn.execute(f"ALTER TABLE {EVENT_TABLE_NAME} ADD COLUMN config_fingerprint TEXT")
     conn.commit()
 
 
@@ -113,18 +121,27 @@ def detect_events_for_new_observation(conn, curr_row: dict) -> List[str]:
 
 
 def record_event(conn, *, event_date: str, ticker: str, event_type: str, score, stage, regime,
-                  methodology_version: str = METHODOLOGY_VERSION) -> bool:
+                  methodology_version: str = METHODOLOGY_VERSION, source: Optional[str] = None,
+                  config_fingerprint: Optional[str] = None) -> bool:
     """Insert-only, deduped on (ticker, event_type, event_date) - a repeat
-    call for the same transition on the same date is a silent no-op."""
+    call for the same transition on the same date is a silent no-op.
+    `source`/`config_fingerprint` (Phase 15 §1.2) default to None - a caller
+    that doesn't pass them gets NULL, never a guessed value."""
     ensure_schema(conn)
     cur = conn.cursor()
     cur.execute(
         f"""
-        INSERT INTO {EVENT_TABLE_NAME} (created_at, event_date, ticker, event_type, score, stage, regime, methodology_version)
-        VALUES (?,?,?,?,?,?,?,?)
+        INSERT INTO {EVENT_TABLE_NAME} (
+            created_at, event_date, ticker, event_type, score, stage, regime, methodology_version,
+            source, config_fingerprint
+        )
+        VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(ticker, event_type, event_date) DO NOTHING
         """,
-        (datetime.now(timezone.utc).isoformat(), event_date, ticker, event_type, score, stage, regime, methodology_version),
+        (
+            datetime.now(timezone.utc).isoformat(), event_date, ticker, event_type, score, stage, regime,
+            methodology_version, source, config_fingerprint,
+        ),
     )
     conn.commit()
     return cur.rowcount > 0
@@ -147,6 +164,7 @@ def record_events_for_observation(conn, curr_row: dict) -> Tuple[List[str], List
         was_new = record_event(
             conn, event_date=curr_row["observation_date"], ticker=curr_row["ticker"], event_type=event_type,
             score=curr_row["score"], stage=curr_row["stage"], regime=curr_row.get("regime"),
+            source=curr_row.get("source"), config_fingerprint=curr_row.get("config_fingerprint"),
         )
         if was_new:
             newly_recorded.append(event_type)

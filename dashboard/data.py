@@ -609,6 +609,27 @@ def get_research_run_ticker_errors(run_id: Optional[int] = None, limit: int = 10
     return errors.head(limit)
 
 
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_long_term_monitoring_summary() -> dict:
+    """Phase 15: capture rate, maturity lag, research-job rates, correction
+    counts, provenance coverage, and an operational-health label - the one
+    getter Component D's dashboard sections read (never call the individual
+    ops.prospective_audit.compute_* functions directly from a view)."""
+    from ops.prospective_audit import long_term_monitoring_summary
+    with db_session() as conn:
+        return long_term_monitoring_summary(conn)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_correction_audit_report(limit: int = 50) -> pd.DataFrame:
+    """Phase 15: one row per (correction, affected_outcome) pair - read-only,
+    ops.correction_impact_audit has zero write path at all."""
+    from ops.correction_impact_audit import audit_all_corrections
+    with db_session() as conn:
+        df = audit_all_corrections(conn)
+    return df.tail(limit) if not df.empty else df
+
+
 def clear_all_caches():
     get_watchlist_overview.clear()
     get_ticker_detail.clear()
@@ -642,3 +663,5 @@ def clear_all_caches():
     get_prospective_audit_summary.clear()
     get_research_cache_completeness_report.clear()
     get_research_run_ticker_errors.clear()
+    get_long_term_monitoring_summary.clear()
+    get_correction_audit_report.clear()
