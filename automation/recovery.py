@@ -51,10 +51,28 @@ class RecoveryResult:
 def _todays_successful_run_exists(conn, today: date) -> bool:
     """Idempotency check for run_recovery(): has a fresh-data run already
     fully succeeded today? Only STATUS_SUCCESS counts - a partial failure or
-    total failure still leaves genuine work for recovery to do."""
+    total failure still leaves genuine work for recovery to do.
+
+    Phase 13 §5.4 fix: matches on the run's exact `trading_date` (set by
+    automation/pipeline.py) rather than string-matching `started_at` (a UTC
+    timestamp, since db/schema.py's `datetime('now')` default is UTC)
+    against `today` (a local calendar date) - the two can silently
+    disagree whenever local date != UTC date (roughly 20:00-23:59 in
+    America/New_York). The legacy fallback below is kept ONLY so
+    pre-migration rows (trading_date IS NULL) aren't silently invisible;
+    new rows always populate trading_date and never reach it.
+    """
     history = load_run_history(conn, limit=50)
     if history.empty:
         return False
+    if "trading_date" in history.columns:
+        exact = history[history["trading_date"] == today.isoformat()]
+        if not exact.empty:
+            return bool((exact["status"] == STATUS_SUCCESS).any())
+    # Legacy fallback for rows recorded before this migration (trading_date
+    # IS NULL) - the OLD, fragile UTC-vs-local-date string-prefix comparison,
+    # kept ONLY so pre-migration history isn't silently invisible. New rows
+    # always populate trading_date and never reach this branch.
     todays = history[history["started_at"].astype(str).str.startswith(today.isoformat())]
     return bool((todays["status"] == STATUS_SUCCESS).any())
 

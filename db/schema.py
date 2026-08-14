@@ -237,6 +237,18 @@ def _migrate_pre_phase5_alerts_table(conn):
         conn.execute("DROP TABLE alerts")
 
 
+def _migrate_add_trading_date_to_automation_runs(conn):
+    """Additive: automation_runs gets a nullable trading_date column so
+    'was there a successful run FOR trading day X' can be an exact match
+    instead of string-matching a UTC timestamp against a local calendar
+    date (Phase 13 spec §5.1). Pre-existing rows get trading_date=NULL -
+    never backfilled/guessed."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(automation_runs)").fetchall()}
+    if "trading_date" not in cols:
+        conn.execute("ALTER TABLE automation_runs ADD COLUMN trading_date TEXT")
+        conn.commit()
+
+
 def init_db(conn):
     """Create all tables if they don't already exist."""
     _migrate_pre_phase5_alerts_table(conn)
@@ -244,3 +256,4 @@ def init_db(conn):
     for statement in ALL_STATEMENTS:
         cur.execute(statement)
     conn.commit()
+    _migrate_add_trading_date_to_automation_runs(conn)

@@ -151,10 +151,10 @@ def run_pipeline(
 
     if not skip_non_trading_day_check and not is_likely_trading_day(check_date):
         reason = f"{check_date.isoformat()} is not an NYSE trading day (weekend or market holiday)"
-        run_id = record_skipped_run(conn, send_mode, STATUS_SKIPPED_NON_TRADING_DAY, reason)
+        run_id = record_skipped_run(conn, send_mode, STATUS_SKIPPED_NON_TRADING_DAY, reason, trading_date=check_date)
         return PipelineResult(run_id=run_id, status=STATUS_SKIPPED_NON_TRADING_DAY, send_mode=send_mode, skipped_reason=reason)
 
-    run_id = start_run(conn, send_mode)
+    run_id = start_run(conn, send_mode, trading_date=check_date)
 
     try:
         outcomes = []

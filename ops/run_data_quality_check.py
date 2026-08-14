@@ -3,11 +3,15 @@
 Builds a data-quality/freshness report, prints a summary table, and
 persists it via `record_check`. Never calls any ingestion function, never
 switches source preference, never deletes/repairs a row.
+
+Phase 13 addition: also appends today's per-(ticker,source) provenance
+fingerprints via `record_source_provenance` (additive, append-only ledger).
 """
 import argparse
 
+from config.settings import WATCHLIST
 from db.database import db_session
-from ops.data_quality import check_watchlist_quality, record_check
+from ops.data_quality import check_watchlist_quality, record_check, record_source_provenance
 
 
 def main():
@@ -20,7 +24,8 @@ def main():
 
     with db_session() as conn:
         report = check_watchlist_quality(conn, tickers=args.tickers)
-        record_check(conn, report)
+        check_id = record_check(conn, report)
+        record_source_provenance(conn, check_id, args.tickers or WATCHLIST)
 
     print(f"\n{'=' * 78}")
     print(f"Data quality check — overall status: {report.overall_status}")

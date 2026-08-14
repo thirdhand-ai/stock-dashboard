@@ -86,10 +86,26 @@ def _todays_production_run_succeeded(conn, today: date) -> bool:
     have actually SUCCEEDED (not partial_failure, not failed, not merely
     "ran") before the research job will build any prospective observation
     for today - directly prevents a repeat of the 2026-08-12 failure mode,
-    where evaluation silently proceeded against stale/unverified data."""
+    where evaluation silently proceeded against stale/unverified data.
+
+    Phase 13 §5.5 fix: matches on the run's exact `trading_date` (set by
+    automation/pipeline.py) rather than string-matching `started_at` (a UTC
+    timestamp) against `today` (a local calendar date) - see
+    automation/recovery.py::_todays_successful_run_exists for the identical
+    fix and full rationale. The legacy fallback below is kept ONLY so
+    pre-migration rows (trading_date IS NULL) aren't silently invisible.
+    """
     history = load_run_history(conn, limit=50)
     if history.empty:
         return False
+    if "trading_date" in history.columns:
+        exact = history[history["trading_date"] == today.isoformat()]
+        if not exact.empty:
+            return bool((exact["status"] == STATUS_SUCCESS).any())
+    # Legacy fallback for rows recorded before this migration (trading_date
+    # IS NULL) - the OLD, fragile UTC-vs-local-date string-prefix comparison,
+    # kept ONLY so pre-migration history isn't silently invisible. New rows
+    # always populate trading_date and never reach this branch.
     todays = history[history["started_at"].astype(str).str.startswith(today.isoformat())]
     return bool((todays["status"] == STATUS_SUCCESS).any())
 

@@ -66,6 +66,39 @@ def _render_system_health(report):
         st.error(f"Data quality: **{overall}**", icon="🚨")
     st.caption(f"Checked at {dq['checked_at']}")
 
+    _render_provider_reconciliation(dq)
+
+
+def _render_provider_reconciliation(dq: dict):
+    with st.expander("Provider reconciliation & provenance detail (Phase 13)"):
+        st.caption(
+            "How production ('alpaca', raw, single-source-per-ticker) and "
+            "research ('alpaca_adjusted', split/dividend-adjusted) price data "
+            "compare. EXPECTED_ADJUSTMENT_DIFFERENCE is normal and does not "
+            "indicate a problem. STALE_SOURCE flags a non-authoritative "
+            "source's most recent row as a likely incomplete/preliminary "
+            "snapshot — informational, never auto-repaired."
+        )
+        overall_v2 = dq.get("overall_status_provenance_aware")
+        st.metric("Provenance-aware overall status", overall_v2)
+        rows = []
+        for t in dq["tickers"]:
+            for f in t.get("provider_findings", []):
+                rows.append({
+                    "Ticker": f["ticker"], "Date": f["date"],
+                    "Source A": f["source_a"], "Source B": f["source_b"],
+                    "Classification": f["classification"],
+                    "Price ratio": f["price_ratio"], "Volume ratio": f["volume_ratio"],
+                    "Detail": f["detail"],
+                })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No cross-source findings.")
+        notes = [n for t in dq["tickers"] for n in t.get("non_authoritative_source_notes", [])]
+        if notes:
+            st.caption("Non-authoritative source notes: " + "; ".join(notes))
+
 
 def _render_today_signals(report):
     st.header("Today's signals")
