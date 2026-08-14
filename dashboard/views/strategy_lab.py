@@ -21,9 +21,11 @@ from dashboard.data import (
     get_phase10_results,
     get_phase11_results,
     get_production_health,
+    get_prospective_audit_summary,
     get_prospective_evidence_status,
     get_prospective_summary,
     get_research_run_history,
+    get_research_run_ticker_errors,
     get_strategy_lab_results,
 )
 from dashboard.theme import SLOT_AQUA, SLOT_BLUE, SLOT_ORANGE, SLOT_VIOLET, STATUS_CRITICAL, STATUS_GOOD
@@ -571,6 +573,46 @@ def _render_production_health():
         st.dataframe(health.get("history"), use_container_width=True, hide_index=True)
 
 
+def _render_research_job_diagnostics():
+    st.subheader("Research job diagnostics (latest run, Phase 14)")
+    st.caption(
+        "Distinguishes success/partial_failure/failed research-job outcomes and, when not a clean "
+        "success, shows the structured per-ticker/source error breakdown (research_run_ticker_errors)."
+    )
+    history = get_research_run_history(limit=1)
+    if history is None or history.empty:
+        st.caption("No research job runs recorded yet.")
+        return
+
+    latest = history.iloc[0]
+    status = latest["status"]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Latest research run status", status)
+    c2.metric("Observations created", int(latest.get("observations_created") or 0))
+    c3.metric("Duplicates skipped", int(latest.get("duplicates_skipped") or 0))
+
+    if status == "success":
+        st.success("Latest research job run succeeded cleanly.", icon="✅")
+        return
+    if status == "partial_failure":
+        st.warning("⚠️ Latest research job run **partially failed** — some tickers or maturation errored.", icon="⚠️")
+    elif status == "failed":
+        st.error("🚨 Latest research job run **failed**.", icon="🚨")
+    else:
+        st.info(f"Latest research job run status: **{status}**.", icon="ℹ️")
+        return
+
+    try:
+        errors_df = get_research_run_ticker_errors(run_id=int(latest["id"]))
+    except Exception as e:
+        st.caption(f"Ticker error detail unavailable: {e}")
+        return
+    if errors_df is None or errors_df.empty:
+        st.caption("No structured per-ticker error rows recorded for this run.")
+    else:
+        st.dataframe(errors_df[["ticker", "source", "reason"]], use_container_width=True, hide_index=True)
+
+
 def _render_prospective_validation():
     from strategy_lab.prospective_events import evidence_label
 
@@ -745,6 +787,29 @@ def _render_prospective_evidence_progress():
     else:
         st.success("**EVALUATION_READY**", icon="🔬")
 
+    # Phase 14: day-ledger summary subsection (ops/prospective_audit.py) -
+    # placed here (unconditionally, before the EVIDENCE_*-gated comparison
+    # below, several branches of which `return` early) so it is always
+    # visible regardless of event-count evidence sufficiency - a per-day
+    # MISSED/CAPTURED/etc. status is exactly the diagnostic an operator
+    # needs most while evidence is still INSUFFICIENT_DATA/EARLY_EVIDENCE.
+    st.subheader("Prospective evidence audit (day-ledger summary, Phase 14)")
+    st.caption(
+        "Separate, per-trading-day status ledger (ops/prospective_audit.py) - never fabricates or "
+        "backfills a missed day's prediction. See the Operations page for the full per-day table."
+    )
+    try:
+        audit_summary = get_prospective_audit_summary()
+        counts = audit_summary.get("counts_by_status") or {}
+        if counts:
+            cols = st.columns(len(counts))
+            for col, (day_status, count_n) in zip(cols, counts.items()):
+                col.metric(day_status, count_n)
+        else:
+            st.caption("No trading days eligible for audit yet.")
+    except Exception as e:
+        st.caption(f"Prospective evidence audit summary unavailable: {e}")
+
     st.subheader("Prospective vs. retrospective comparison")
     if label == "INSUFFICIENT_DATA":
         st.warning("INSUFFICIENT PROSPECTIVE EVIDENCE", icon="⚠️")
@@ -874,6 +939,11 @@ def render():
 
     st.divider()
     _render_production_health()
+    st.divider()
+    try:
+        _render_research_job_diagnostics()
+    except Exception as e:
+        components.empty_state("Research job diagnostics unavailable", str(e), icon="⚠️")
     st.divider()
     _render_prospective_validation()
     st.divider()

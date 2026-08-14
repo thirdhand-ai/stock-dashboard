@@ -548,6 +548,67 @@ def get_ops_research_run_history(limit: int = 20) -> pd.DataFrame:
         return load_research_run_history(conn, limit=limit)
 
 
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_prospective_day_ledger(limit_days: int = 90) -> pd.DataFrame:
+    """ops.prospective_audit.build_prospective_day_ledger, most recent
+    limit_days rows, as a DataFrame for st.dataframe. Read-only; never
+    fabricates or backfills a missed day's prediction."""
+    from ops.prospective_audit import build_prospective_day_ledger
+    with db_session() as conn:
+        ledger = build_prospective_day_ledger(conn)
+    df = pd.DataFrame([dataclasses.asdict(day) for day in ledger])
+    if df.empty:
+        return df
+    return df.tail(limit_days).reset_index(drop=True)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_prospective_audit_summary() -> dict:
+    """ops.prospective_audit.prospective_evidence_audit_summary."""
+    from ops.prospective_audit import prospective_evidence_audit_summary
+    with db_session() as conn:
+        return prospective_evidence_audit_summary(conn)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_research_cache_completeness_report() -> dict:
+    """READ-ONLY snapshot: for each RESEARCH_UNIVERSE ticker, whether
+    strategy_lab.cache_integrity.latest_row_is_incomplete(conn, ticker) is
+    True RIGHT NOW (a pure SQL check - no Alpaca call), plus the most recent
+    rows of research_cache_corrections. NEVER calls
+    refresh_incomplete_latest_bars (which makes live Alpaca calls) from a
+    dashboard page load."""
+    from strategy_lab.cache_integrity import CORRECTIONS_TABLE, ensure_schema, latest_row_is_incomplete
+    from strategy_lab.universe import RESEARCH_UNIVERSE
+
+    with db_session() as conn:
+        ensure_schema(conn)
+        flagged = [t for t in RESEARCH_UNIVERSE if latest_row_is_incomplete(conn, t)]
+        corrections_df = pd.read_sql_query(
+            f"SELECT * FROM {CORRECTIONS_TABLE} ORDER BY corrected_at DESC, id DESC LIMIT 20", conn,
+        )
+    return {
+        "currently_flagged_incomplete": flagged,
+        "recent_corrections": corrections_df.to_dict("records"),
+    }
+
+
+@st.cache_data(ttl=STRATEGY_LAB_TTL_SECONDS, show_spinner=False)
+def get_research_run_ticker_errors(run_id: Optional[int] = None, limit: int = 100) -> pd.DataFrame:
+    """strategy_lab.research_automation.load_ticker_errors_for_run for the
+    given run_id, or the latest research_run_history run if None."""
+    from strategy_lab.research_automation import load_research_run_history, load_ticker_errors_for_run
+
+    with db_session() as conn:
+        if run_id is None:
+            history = load_research_run_history(conn, limit=1)
+            if history.empty:
+                return pd.DataFrame()
+            run_id = int(history.iloc[0]["id"])
+        errors = load_ticker_errors_for_run(conn, run_id)
+    return errors.head(limit)
+
+
 def clear_all_caches():
     get_watchlist_overview.clear()
     get_ticker_detail.clear()
@@ -577,3 +638,7 @@ def clear_all_caches():
     get_experiment_registry_drift.clear()
     get_prospective_evidence_status.clear()
     get_ops_research_run_history.clear()
+    get_prospective_day_ledger.clear()
+    get_prospective_audit_summary.clear()
+    get_research_cache_completeness_report.clear()
+    get_research_run_ticker_errors.clear()

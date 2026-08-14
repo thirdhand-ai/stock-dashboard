@@ -43,6 +43,12 @@ STATUS_SUCCESS_RESEARCH = "success"
 STATUS_SKIPPED_NON_TRADING_DAY = "skipped_non_trading_day"
 STATUS_SKIPPED_NO_FRESH_DATA = "skipped_no_fresh_market_data"
 STATUS_FAILED = "failed"
+# Phase 14 §3.1: string value intentionally matches
+# db.run_history_repository.STATUS_PARTIAL_FAILURE for human-readability
+# consistency across the two separate tables - this is a new LOCAL constant
+# in research_run_history's own module, not an import, same pattern
+# STATUS_SUCCESS_RESEARCH already uses.
+STATUS_PARTIAL_FAILURE_RESEARCH = "partial_failure"
 
 _CREATE_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {RUN_HISTORY_TABLE_NAME} (
@@ -61,10 +67,59 @@ CREATE TABLE IF NOT EXISTS {RUN_HISTORY_TABLE_NAME} (
 )
 """
 
+# Phase 14 §3.5: additive, structured per-ticker/source diagnostics -
+# strictly a companion to the flat `errors` TEXT column above (kept
+# unchanged for backward compatibility). Own ensure_schema, own table, never
+# added to db/schema.py::ALL_STATEMENTS - matches the established
+# strategy_lab/ops convention.
+TICKER_ERRORS_TABLE_NAME = "research_run_ticker_errors"
+
+_CREATE_TICKER_ERRORS_TABLE_SQL = f"""
+CREATE TABLE IF NOT EXISTS {TICKER_ERRORS_TABLE_NAME} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    trading_date TEXT NOT NULL,
+    ticker TEXT,
+    source TEXT,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def ensure_schema(conn) -> None:
     conn.execute(_CREATE_TABLE_SQL)
     conn.commit()
+
+
+def ensure_ticker_errors_schema(conn) -> None:
+    conn.execute(_CREATE_TICKER_ERRORS_TABLE_SQL)
+    conn.commit()
+
+
+def record_ticker_error(conn, run_id: int, trading_date: str, reason: str,
+                         ticker: Optional[str] = None, source: Optional[str] = None) -> None:
+    """Append-only. Called at BOTH existing exception sites in
+    run_research_job (per-ticker, and the maturation try/except -
+    ticker=None for the latter)."""
+    ensure_ticker_errors_schema(conn)
+    conn.execute(
+        f"""
+        INSERT INTO {TICKER_ERRORS_TABLE_NAME} (run_id, trading_date, ticker, source, reason)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (run_id, trading_date, ticker, source, reason),
+    )
+    conn.commit()
+
+
+def load_ticker_errors_for_run(conn, run_id: int):
+    import pandas as pd
+    ensure_ticker_errors_schema(conn)
+    return pd.read_sql_query(
+        f"SELECT * FROM {TICKER_ERRORS_TABLE_NAME} WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+        conn, params=(run_id,),
+    )
 
 
 @dataclass
@@ -164,6 +219,8 @@ def run_research_job(conn, today: Optional[date] = None, tickers: Optional[List[
     result = ResearchRunResult(run_id=run_id, status=STATUS_SUCCESS_RESEARCH, trading_date=today.isoformat(), tickers_attempted=len(tickers))
 
     for ticker in tickers:
+        obs = None  # reset each iteration so a failure on this ticker never
+                    # inherits the previous ticker's `obs` in the except block
         try:
             obs = build_todays_observation(conn, ticker, as_of_date=today.isoformat())
             if obs is None:
@@ -171,13 +228,26 @@ def run_research_job(conn, today: Optional[date] = None, tickers: Optional[List[
             inserted = record_observation(conn, **obs)
             if inserted:
                 result.observations_created += 1
-                event_types = record_events_for_observation(conn, obs)
-                result.events_created += len(event_types)
             else:
                 result.duplicates_skipped += 1
+            # Phase 14 §3.3 (Bug 2 fix): ALWAYS attempt event-building,
+            # whether this call inserted a new row or found an existing one -
+            # detect_events_for_new_observation compares against the PRIOR
+            # day's stored observation (strictly < today's date), so this is
+            # already correct/idempotent to call on a duplicate-day retry;
+            # record_event's own ON CONFLICT DO NOTHING makes re-recording an
+            # already-existing event a genuine no-op. This is what makes a
+            # retry after an event-building failure actually able to
+            # recover, instead of being permanently gated behind
+            # `if inserted:`.
+            detected, newly_recorded = record_events_for_observation(conn, obs)
+            result.events_created += len(newly_recorded)
         except Exception as e:
             logger.error("research job: observation failed for %s: %s\n%s", ticker, e, traceback.format_exc())
             result.errors.append(f"{ticker}: {type(e).__name__}: {e}")
+            record_ticker_error(conn, run_id, ticker=ticker,
+                                 source=obs.get("source") if obs is not None else None,
+                                 trading_date=today.isoformat(), reason=f"{type(e).__name__}: {e}")
 
     try:
         matured = mature_outcomes(conn, today=today)
@@ -185,9 +255,18 @@ def run_research_job(conn, today: Optional[date] = None, tickers: Optional[List[
     except Exception as e:
         logger.error("research job: outcome maturation failed: %s\n%s", e, traceback.format_exc())
         result.errors.append(f"maturation: {type(e).__name__}: {e}")
+        record_ticker_error(conn, run_id, ticker=None, source=None,
+                             trading_date=today.isoformat(), reason=f"maturation: {type(e).__name__}: {e}")
 
-    if result.errors and result.observations_created == 0 and result.duplicates_skipped == 0:
-        result.status = STATUS_FAILED
+    # Phase 14 §3.2 (Bug 1 fix): any non-empty result.errors - whether from a
+    # per-ticker exception or the maturation try/except - now ALWAYS moves
+    # status off STATUS_SUCCESS_RESEARCH. A clean run (empty errors) is
+    # unaffected.
+    if result.errors:
+        if result.observations_created > 0 or result.duplicates_skipped > 0:
+            result.status = STATUS_PARTIAL_FAILURE_RESEARCH
+        else:
+            result.status = STATUS_FAILED
 
     _finish_run(conn, run_id, result)
     return result

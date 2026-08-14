@@ -15,8 +15,11 @@ from dashboard.data import (
     get_data_quality_report,
     get_ops_daily_report,
     get_ops_research_run_history,
+    get_prospective_audit_summary,
+    get_prospective_day_ledger,
     get_prospective_evidence_status,
     get_reconciliation_report,
+    get_research_cache_completeness_report,
     get_run_history,
 )
 
@@ -182,6 +185,62 @@ def _render_prospective_evidence():
         st.success(f"**{label}**", icon="🔬")
 
 
+def _render_prospective_day_ledger():
+    st.header("Prospective evidence audit (per-trading-day)")
+    st.caption(
+        "Cross-references production run history, research job history, and "
+        "recorded observations - reporting only, never fabricates or "
+        "backfills a missed day's prediction."
+    )
+    summary = get_prospective_audit_summary()
+    counts = summary["counts_by_status"]
+    if counts:
+        cols = st.columns(len(counts))
+        for col, (status, n) in zip(cols, counts.items()):
+            col.metric(status, n)
+    else:
+        st.caption("No trading days eligible for audit yet (research job has never run).")
+    ledger = get_prospective_day_ledger()
+    if ledger is None or ledger.empty:
+        st.caption("No ledger rows yet.")
+    else:
+        st.dataframe(ledger, use_container_width=True, hide_index=True)
+    st.markdown("**Outcome maturation by horizon**")
+    maturation = summary.get("maturation_by_horizon") or {}
+    if maturation:
+        st.dataframe(pd.DataFrame(maturation).T, use_container_width=True)
+    else:
+        st.caption("No maturation data yet.")
+
+
+def _render_research_cache_completeness():
+    st.header("Research cache completeness / anomaly surfacing")
+    report = get_research_cache_completeness_report()
+    flagged = report["currently_flagged_incomplete"]
+    if flagged:
+        st.warning(
+            f"⚠️ {len(flagged)} ticker(s) have a possibly-incomplete latest cached bar, "
+            f"pending the next scheduled cache-completeness pass: {flagged}",
+            icon="🕒",
+        )
+    else:
+        st.success("No tickers currently flagged as having an incomplete latest bar.", icon="✅")
+    corrections = report["recent_corrections"]
+    if corrections:
+        st.markdown("**Recent cache corrections (preliminary → final bar replacements)**")
+        st.dataframe(pd.DataFrame(corrections), use_container_width=True, hide_index=True)
+        affecting_frozen = [c for c in corrections if c.get("affects_frozen_artifacts") not in (None, "", "[]")]
+        if affecting_frozen:
+            st.error(
+                "⚠️ One or more corrections may affect data already reflected in a frozen "
+                "Phase 9-13 research artifact. Regenerating that artifact requires an explicit, "
+                f"human-approved `python -m strategy_lab.run_study` (etc.) run: {affecting_frozen}",
+                icon="🚨",
+            )
+    else:
+        st.caption("No recorded cache corrections.")
+
+
 def _render_automation_history():
     st.header("Recent automation history")
     col1, col2 = st.columns(2)
@@ -264,6 +323,16 @@ def render():
     _render_paper_portfolio_summary(report)
     st.divider()
     _render_prospective_evidence()
+    st.divider()
+    try:
+        _render_prospective_day_ledger()
+    except Exception as e:
+        components.empty_state("Prospective evidence audit unavailable", str(e), icon="⚠️")
+    st.divider()
+    try:
+        _render_research_cache_completeness()
+    except Exception as e:
+        components.empty_state("Research cache completeness report unavailable", str(e), icon="⚠️")
     st.divider()
     _render_automation_history()
     st.divider()

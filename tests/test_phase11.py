@@ -145,16 +145,19 @@ def test_event_fires_once_on_crossing_not_every_qualifying_day():
     day3 = _obs(observation_date="2024-01-04", score=76.0, stage="momentum")  # stays qualifying - no new event
 
     record_observation(conn, **day1)
-    events1 = record_events_for_observation(conn, day1)
+    events1, newly_recorded1 = record_events_for_observation(conn, day1)
     assert events1 == []  # first observation never an event (no baseline)
+    assert newly_recorded1 == []
 
     record_observation(conn, **day2)
-    events2 = record_events_for_observation(conn, day2)
+    events2, newly_recorded2 = record_events_for_observation(conn, day2)
     assert EVENT_SCORE_CROSSING in events2
+    assert EVENT_SCORE_CROSSING in newly_recorded2
 
     record_observation(conn, **day3)
-    events3 = record_events_for_observation(conn, day3)
+    events3, newly_recorded3 = record_events_for_observation(conn, day3)
     assert events3 == []  # continuing to qualify is not a new event
+    assert newly_recorded3 == []
 
     all_events = load_events(conn, ticker="AAA")
     assert len(all_events[all_events["event_type"] == EVENT_SCORE_CROSSING]) == 1
@@ -184,8 +187,9 @@ def test_trend_advance_event_detected():
     record_observation(conn, **day1)
     record_events_for_observation(conn, day1)
     record_observation(conn, **day2)
-    events2 = record_events_for_observation(conn, day2)
+    events2, newly_recorded2 = record_events_for_observation(conn, day2)
     assert EVENT_TREND_ADVANCE in events2
+    assert EVENT_TREND_ADVANCE in newly_recorded2
 
 
 # --- B16 sample guardrails: labels only, never upgrade readiness ---

@@ -11,7 +11,7 @@ run_alerts (see tests/test_strategy_lab.py's structural safety tests,
 which scan every file in this package for exactly those imports).
 """
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -130,17 +130,27 @@ def record_event(conn, *, event_date: str, ticker: str, event_type: str, score, 
     return cur.rowcount > 0
 
 
-def record_events_for_observation(conn, curr_row: dict) -> List[str]:
+def record_events_for_observation(conn, curr_row: dict) -> Tuple[List[str], List[str]]:
     """Detect + persist all events implied by this observation, comparing
-    against the prior stored observation for the same ticker. Returns the
-    event_types actually recorded (empty if none fired)."""
+    against the prior stored observation for the same ticker.
+
+    Returns (detected_event_types, newly_recorded_event_types) - Phase 14
+    §3.4. `detected` is every event_type the transition logic identified
+    this call (useful for logging/debugging, including on a duplicate-day
+    retry where they'll all already exist). `newly_recorded` is the subset
+    that record_event() actually inserted (rowcount > 0) THIS call - what
+    run_research_job's events_created counter must use, so a retry never
+    inflates the metric for events that already existed."""
     event_types = detect_events_for_new_observation(conn, curr_row)
+    newly_recorded = []
     for event_type in event_types:
-        record_event(
+        was_new = record_event(
             conn, event_date=curr_row["observation_date"], ticker=curr_row["ticker"], event_type=event_type,
             score=curr_row["score"], stage=curr_row["stage"], regime=curr_row.get("regime"),
         )
-    return event_types
+        if was_new:
+            newly_recorded.append(event_type)
+    return event_types, newly_recorded
 
 
 LABEL_INSUFFICIENT = "INSUFFICIENT EVIDENCE"

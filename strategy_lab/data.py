@@ -72,10 +72,27 @@ def fetch_and_cache_universe(conn, tickers: List[str], years: int = DEFAULT_YEAR
     """
     min_rows = int(years * 365 * 0.68)  # ~252 trading days/year, generous floor
     to_fetch = [t for t in tickers if _needs_fetch(conn, t, min_rows)]
+    already_cached = [t for t in tickers if t not in to_fetch]
     report: Dict[str, dict] = {
         t: {"status": "cached", "rows": len(load_price_history(conn, t, source=RESEARCH_SOURCE)), "error": None}
-        for t in tickers if t not in to_fetch
+        for t in already_cached
     }
+
+    # Phase 14 Component A (additive, §1.3): tickers that already have
+    # enough total rows (so were never in `to_fetch`) may still have a
+    # stale/incomplete SINGLE latest bar (fetched intraday, before that
+    # session's NYSE close, and never refreshed since - see
+    # strategy_lab/cache_integrity.py's docstring). This pass runs
+    # automatically every call, no opt-in flag (§0.5 item 2); the cost is
+    # bounded - one cheap SQL check per already-cached ticker, an Alpaca call
+    # only for tickers genuinely flagged incomplete, and never the full
+    # 5-year backfill. `_needs_fetch` itself and the full-backfill loop below
+    # are completely unchanged.
+    from strategy_lab.cache_integrity import refresh_incomplete_latest_bars
+    completeness = refresh_incomplete_latest_bars(conn, already_cached)
+    for t, r in completeness.items():
+        if r["status"] != "no_action_needed":
+            report[t]["completeness_refresh"] = r
 
     if not to_fetch:
         return report
