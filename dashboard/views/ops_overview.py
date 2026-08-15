@@ -10,6 +10,7 @@ a real Discord message.
 import pandas as pd
 import streamlit as st
 
+from ops.evidence_classification import EVIDENCE_INSUFFICIENT_DATA
 from dashboard import components
 from dashboard.data import (
     get_correction_audit_report,
@@ -17,6 +18,7 @@ from dashboard.data import (
     get_long_term_monitoring_summary,
     get_ops_daily_report,
     get_ops_research_run_history,
+    get_phase16_monitoring_summary,
     get_prospective_audit_summary,
     get_prospective_day_ledger,
     get_prospective_evidence_status,
@@ -314,6 +316,92 @@ def _render_evidence_provenance_audit():
         st.caption("No corrections recorded — no correction-impact trail to show.")
 
 
+def _render_regime_provenance_monitoring():
+    st.header("Regime capture / event / outcome provenance monitoring (Phase 16)")
+    st.caption(
+        "Regime-lookup fix monitoring, legacy regime-gap reporting, event/experiment "
+        "provenance, and row-level completeness classification - all read-only, "
+        "informational, no repair/backfill path anywhere in this section."
+    )
+    summary = get_phase16_monitoring_summary()
+
+    evidence = summary["evidence_sufficiency"]
+    label = evidence["status"]
+    if label == EVIDENCE_INSUFFICIENT_DATA:
+        st.warning(f"Evidence sufficiency: **{label}**", icon="🔬")
+    elif label == "EARLY_EVIDENCE":
+        st.info(f"Evidence sufficiency: **{label}**", icon="🔬")
+    else:
+        st.success(f"Evidence sufficiency: **{label}**", icon="🔬")
+    st.caption(f"{evidence['n_prospective_trading_days']} prospective trading day(s) observed.")
+
+    st.markdown("**Regime distribution (observations)**")
+    dist = summary["regime_distribution"]
+    if dist.get("by_label"):
+        st.dataframe(
+            pd.DataFrame(list(dist["by_label"].items()), columns=["regime_label", "count"]),
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.caption("No observations recorded yet.")
+
+    st.markdown("**Legacy regime-gap summary** — informational only, no repair performed here.")
+    gap_summary = summary["legacy_regime_gap_summary"]
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Total legacy NULL-regime rows", gap_summary["total_legacy_null_regime"])
+    g2.metric("Reconstructable", gap_summary["reconstructable_count"])
+    g3.metric("Not reconstructable", gap_summary["not_reconstructable_count"])
+    g4.metric("Correction-sensitive", gap_summary["correction_sensitive_count"])
+
+    st.markdown("**Completeness breakdown**")
+    completeness = summary["completeness_breakdown"]
+    for section_name, section_label in (
+        ("observations", "Observations"), ("events", "Events"), ("outcomes", "Outcomes"),
+    ):
+        counts = completeness.get(section_name, {})
+        st.caption(section_label)
+        st.dataframe(
+            pd.DataFrame([{
+                "COMPLETE": counts.get("COMPLETE", 0), "PARTIAL": counts.get("PARTIAL", 0),
+                "LEGACY_INCOMPLETE": counts.get("LEGACY_INCOMPLETE", 0), "INVALID": counts.get("INVALID", 0),
+                "total": counts.get("total", 0),
+            }]), use_container_width=True, hide_index=True,
+        )
+
+    st.markdown("**Event type breakdown**")
+    event_audit = summary["event_provenance_audit"]
+    breakdown = event_audit["event_type_breakdown"]
+    st.caption("entry_attributable (variant-specific) vs shared_signal_detection (not variant-specific by design)")
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        st.markdown("_Entry-attributable_")
+        entry = breakdown.get("entry_attributable", {})
+        if entry:
+            st.dataframe(pd.DataFrame(list(entry.items()), columns=["event_type", "count"]),
+                         use_container_width=True, hide_index=True)
+        else:
+            st.caption("No entry-attributable events recorded yet.")
+    with ec2:
+        st.markdown("_Shared signal detection_")
+        shared = breakdown.get("shared_signal_detection", {})
+        if shared:
+            st.dataframe(pd.DataFrame(list(shared.items()), columns=["event_type", "count"]),
+                         use_container_width=True, hide_index=True)
+        else:
+            st.caption("No shared signal-detection events recorded yet.")
+
+    gap_note = event_audit["exit_attribution_gap"]
+    st.caption(f"Exit-attribution gap: {gap_note['note']}")
+
+    st.markdown("**Outcome source-resolution breakdown**")
+    resolution = summary["outcome_source_resolution"]
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Explicit", resolution["explicit"])
+    r2.metric("Resolved fallback", resolution["resolved_fallback"])
+    r3.metric("Unavailable", resolution["unavailable"])
+    r4.metric("Not yet resolved", resolution["not_yet_resolved"])
+
+
 def _render_automation_history():
     st.header("Recent automation history")
     col1, col2 = st.columns(2)
@@ -411,6 +499,11 @@ def render():
         _render_evidence_provenance_audit()
     except Exception as e:
         components.empty_state("Evidence provenance / audit unavailable", str(e), icon="⚠️")
+    st.divider()
+    try:
+        _render_regime_provenance_monitoring()
+    except Exception as e:
+        components.empty_state("Regime / event / outcome provenance monitoring unavailable", str(e), icon="⚠️")
     st.divider()
     _render_automation_history()
     st.divider()

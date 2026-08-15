@@ -9,6 +9,8 @@ operations, so each date in the 5-year sample can be tagged with the regime
 that was in effect at the time - still using only trailing information
 available as of that date (rolling SMA/vol/drawdown), so no look-ahead.
 """
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 
@@ -57,3 +59,33 @@ def compute_historical_regime_series(conn, config: RegimeConfig = DEFAULT_REGIME
         "drawdown_pct": drawdown_pct,
     })
     return out.dropna(subset=["sma_long"]).reset_index(drop=True)
+
+
+def regime_label_as_of(regime_series: pd.DataFrame, as_of_date: Optional[str] = None) -> Optional[str]:
+    """Point-in-time regime lookup used ONLY by
+    strategy_lab.prospective.build_todays_observation (never by report.py/
+    portfolio_simulator.py/report_phase10.py, which keep their own exact-
+    match usage unchanged).
+
+    as_of_date=None: returns the single most recent available label
+    (regime_series.iloc[-1]["label"]) - equivalent to today's existing
+    behavior for the ad-hoc/no-date CLI path
+    (strategy_lab/run_prospective_observation.py:28 calls
+    build_todays_observation(conn, ticker) with no as_of_date).
+
+    as_of_date=a date string: returns the label of the most recent row in
+    regime_series with date <= as_of_date (regime_series is guaranteed
+    sorted ascending by compute_historical_regime_series's own
+    .sort_values("date").reset_index(drop=True), :29). NEVER considers a
+    date > as_of_date - no look-ahead. Returns None (never fabricates a
+    label) if regime_series is empty, or if every row's date is >
+    as_of_date (insufficient trailing history existed as of that date -
+    a real 'no signal' outcome)."""
+    if regime_series.empty:
+        return None
+    if as_of_date is None:
+        return regime_series.iloc[-1]["label"]
+    eligible = regime_series[regime_series["date"] <= as_of_date]
+    if eligible.empty:
+        return None
+    return eligible.iloc[-1]["label"]

@@ -62,7 +62,27 @@ def ensure_schema(conn) -> None:
         conn.execute(f"ALTER TABLE {OUTCOME_TABLE_NAME} ADD COLUMN methodology_version TEXT")
     if "config_fingerprint" not in cols:
         conn.execute(f"ALTER TABLE {OUTCOME_TABLE_NAME} ADD COLUMN config_fingerprint TEXT")
+    # Phase 16 §4.1: additive migration for `source_resolution_method`/
+    # `effective_price_source_used` - visibility into the already-happening
+    # silent load_price_history() source fallback for a legacy (prov_source
+    # NULL) row, without changing the meaning of the existing `source`
+    # column (which stays the observation's OWN stored provenance). Same
+    # PRAGMA table_info + guarded ALTER TABLE pattern as every migration
+    # above.
+    if "source_resolution_method" not in cols:
+        conn.execute(f"ALTER TABLE {OUTCOME_TABLE_NAME} ADD COLUMN source_resolution_method TEXT")
+    if "effective_price_source_used" not in cols:
+        conn.execute(f"ALTER TABLE {OUTCOME_TABLE_NAME} ADD COLUMN effective_price_source_used TEXT")
     conn.commit()
+
+
+# Phase 16 §4.1: describes what maturation actually DID at price-load time -
+# a separate, additional pair of columns from source/methodology_version/
+# config_fingerprint above (which keep meaning "the observation's own stored
+# provenance," staying NULL for a legacy row exactly as today).
+SOURCE_RESOLUTION_EXPLICIT = "explicit"           # prov_source was non-NULL
+SOURCE_RESOLUTION_FALLBACK = "resolved_fallback"  # prov_source NULL, resolve_source() picked one
+SOURCE_RESOLUTION_UNAVAILABLE = "unavailable"     # prov_source NULL AND resolve_source() found nothing
 
 
 @dataclass
@@ -77,6 +97,8 @@ class MaturationOutcome:
     source: Optional[str] = None
     methodology_version: Optional[str] = None
     config_fingerprint: Optional[str] = None
+    source_resolution_method: Optional[str] = None
+    effective_price_source_used: Optional[str] = None
 
 
 def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dict) -> MaturationOutcome:
@@ -106,6 +128,28 @@ def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dic
 
     ticker = obs_row["ticker"]
     source = prov_source
+
+    # Phase 16 §4.1: describes what maturation actually did to resolve a
+    # price source, computed only here - never on the early STATUS_PENDING
+    # return above, since nothing about pricing has happened yet to
+    # describe. `if prov_source:` structurally guarantees a row with a real
+    # `source` can never reach resolve_source() - there is no code path for
+    # it to (§4.2). Deliberately duplicates the cheap, pure resolve_source
+    # read (function-local import, mirrors this file's existing style)
+    # rather than changing db/price_repository.py's shared, widely-used
+    # public contract - the actual load_price_history(conn, ticker,
+    # source=source) call immediately below is unchanged, `source` is still
+    # exactly `prov_source` (possibly None).
+    from db.price_repository import resolve_source
+    if prov_source:
+        effective_source = prov_source
+        source_resolution_method = SOURCE_RESOLUTION_EXPLICIT
+    else:
+        effective_source = resolve_source(conn, ticker)
+        source_resolution_method = (
+            SOURCE_RESOLUTION_FALLBACK if effective_source else SOURCE_RESOLUTION_UNAVAILABLE
+        )
+
     cache_key = (ticker, source)
     if cache_key not in price_cache:
         price_cache[cache_key] = load_price_history(conn, ticker, source=source).sort_values("date").reset_index(drop=True)
@@ -117,6 +161,8 @@ def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dic
             horizon_days=horizon_days, status=STATUS_UNAVAILABLE,
             source=prov_source, methodology_version=prov_methodology_version,
             config_fingerprint=prov_config_fingerprint,
+            source_resolution_method=source_resolution_method,
+            effective_price_source_used=effective_source,
         )
 
     date_index = {d: i for i, d in enumerate(price_df["date"])}
@@ -133,6 +179,8 @@ def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dic
             horizon_days=horizon_days, status=STATUS_UNAVAILABLE,
             source=prov_source, methodology_version=prov_methodology_version,
             config_fingerprint=prov_config_fingerprint,
+            source_resolution_method=source_resolution_method,
+            effective_price_source_used=effective_source,
         )
 
     entry_price = float(price_df.at[idx, "close"])
@@ -145,6 +193,8 @@ def _compute_one(conn, obs_row, horizon_days: int, today: date, price_cache: dic
         realized_return=realized_return, exit_date=str(price_df.at[exit_idx, "date"]),
         source=prov_source, methodology_version=prov_methodology_version,
         config_fingerprint=prov_config_fingerprint,
+        source_resolution_method=source_resolution_method,
+        effective_price_source_used=effective_source,
     )
 
 
@@ -169,23 +219,31 @@ def _persist(conn, outcome: MaturationOutcome) -> None:
 
     Phase 15 §1.3: also (re-)persists `source`/`methodology_version`/
     `config_fingerprint`, always re-derived from the same immutable
-    observation row on every call - safe/idempotent in DO UPDATE."""
+    observation row on every call - safe/idempotent in DO UPDATE.
+
+    Phase 16 §4.1: also (re-)persists `source_resolution_method`/
+    `effective_price_source_used` - same idempotent pattern as the three
+    Phase 15 fields above."""
     conn.execute(
         f"""
         INSERT INTO {OUTCOME_TABLE_NAME} (
             observation_id, ticker, observation_date, horizon_days, status, realized_return, exit_date,
-            source, methodology_version, config_fingerprint
+            source, methodology_version, config_fingerprint,
+            source_resolution_method, effective_price_source_used
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(observation_id, horizon_days) DO UPDATE SET
             status=excluded.status, realized_return=excluded.realized_return,
             exit_date=excluded.exit_date, matured_at=datetime('now'),
             source=excluded.source, methodology_version=excluded.methodology_version,
-            config_fingerprint=excluded.config_fingerprint
+            config_fingerprint=excluded.config_fingerprint,
+            source_resolution_method=excluded.source_resolution_method,
+            effective_price_source_used=excluded.effective_price_source_used
         """,
         (outcome.observation_id, outcome.ticker, outcome.observation_date, outcome.horizon_days,
          outcome.status, outcome.realized_return, outcome.exit_date,
-         outcome.source, outcome.methodology_version, outcome.config_fingerprint),
+         outcome.source, outcome.methodology_version, outcome.config_fingerprint,
+         outcome.source_resolution_method, outcome.effective_price_source_used),
     )
 
 
@@ -232,5 +290,24 @@ def maturation_summary(conn) -> dict:
         "pending": int(counts.get(STATUS_PENDING, 0)),
         "matured": int(counts.get(STATUS_MATURED, 0)),
         "unavailable": int(counts.get(STATUS_UNAVAILABLE, 0)),
+        "total": int(len(outcomes)),
+    }
+
+
+def source_resolution_summary(conn) -> dict:
+    """{'explicit', 'resolved_fallback', 'unavailable', 'not_yet_resolved'
+    (STATUS_PENDING rows, both fields NULL), 'total'} - counts over
+    load_outcomes(conn). Phase 16 §4.1 companion to maturation_summary
+    above, over the new source_resolution_method column."""
+    outcomes = load_outcomes(conn)
+    if outcomes.empty:
+        return {"explicit": 0, "resolved_fallback": 0, "unavailable": 0, "not_yet_resolved": 0, "total": 0}
+    counts = outcomes["source_resolution_method"].value_counts(dropna=True).to_dict()
+    not_yet_resolved = int(outcomes["source_resolution_method"].isna().sum())
+    return {
+        "explicit": int(counts.get(SOURCE_RESOLUTION_EXPLICIT, 0)),
+        "resolved_fallback": int(counts.get(SOURCE_RESOLUTION_FALLBACK, 0)),
+        "unavailable": int(counts.get(SOURCE_RESOLUTION_UNAVAILABLE, 0)),
+        "not_yet_resolved": not_yet_resolved,
         "total": int(len(outcomes)),
     }

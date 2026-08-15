@@ -44,6 +44,22 @@ from strategy_lab.research_automation import (
     load_research_run_history,
 )
 
+# --- Phase 16 additive imports (§5.2) ---
+from ops.completeness_classification import (
+    classify_event_row,
+    classify_observation_row,
+    classify_outcome_row,
+)
+from ops.event_provenance_audit import event_provenance_audit_summary
+from ops.evidence_classification import (
+    EVIDENCE_INSUFFICIENT_DATA,
+    classify_evidence,
+    count_prospective_trading_days,
+)
+from ops.regime_reconstruction_audit import legacy_regime_gap_summary
+from strategy_lab.outcome_maturation import source_resolution_summary
+from strategy_lab.prospective_events import load_events
+
 # Internal string literal for the "crashed mid-run" convention documented in
 # docs/specs/phase14.md §0.3 - research_run_history's own DEFAULT 'running'
 # (see strategy_lab/research_automation.py's _CREATE_TABLE_SQL). Not
@@ -528,5 +544,87 @@ def long_term_monitoring_summary(conn, today: Optional[date] = None) -> dict:
             capture_rate.get("capture_rate_pct"), consecutive_missed_days,
             research_job_rates.get("failure_rate_pct"),
         ),
+    })
+    return summary
+
+
+# --- Phase 16 §5.2: additive monitoring/reporting functions. Everything
+# below reuses existing load_* functions and Areas B/C/D/E helpers rather
+# than re-deriving anything - still read-only, still no retrospective
+# backfill. ---
+
+
+def compute_regime_distribution(conn) -> dict:
+    """{'by_label': {label_or_'NULL': count}, 'total'} - groups
+    load_observations(conn)['regime'] including a literal 'NULL' bucket
+    key for None values (a REPORTING bucket only - never a stored DB
+    value; NULL rows may be either pre-Area-A-fix legacy rows or genuine
+    insufficient-history rows, disambiguated via legacy_regime_gap_summary
+    below, not conflated here)."""
+    observations = load_observations(conn)
+    if observations.empty:
+        return {"by_label": {}, "total": 0}
+
+    by_label: Dict[str, int] = {}
+    for value in observations["regime"]:
+        label = "NULL" if value is None or (isinstance(value, float) and pd.isna(value)) else str(value)
+        by_label[label] = by_label.get(label, 0) + 1
+
+    return {"by_label": by_label, "total": int(len(observations))}
+
+
+def compute_completeness_breakdown(conn) -> dict:
+    """{'observations': {COMPLETE:n, PARTIAL:n, LEGACY_INCOMPLETE:n, INVALID:n, 'total':n},
+    'events': {...same 4 keys...}, 'outcomes': {...same 4 keys...}} - one
+    classify_*_row() call per row via load_observations/load_events/load_outcomes."""
+
+    def _rollup(df: pd.DataFrame, classify_fn) -> dict:
+        counts = {
+            "COMPLETE": 0, "PARTIAL": 0, "LEGACY_INCOMPLETE": 0, "INVALID": 0, "total": 0,
+        }
+        if df.empty:
+            return counts
+        for _, row in df.iterrows():
+            label = classify_fn(row.to_dict())
+            counts[label] = counts.get(label, 0) + 1
+            counts["total"] += 1
+        return counts
+
+    observations = load_observations(conn)
+    events = load_events(conn)
+    outcomes = load_outcomes(conn)
+
+    return {
+        "observations": _rollup(observations, classify_observation_row),
+        "events": _rollup(events, classify_event_row),
+        "outcomes": _rollup(outcomes, classify_outcome_row),
+    }
+
+
+def phase16_monitoring_summary(conn, today: Optional[date] = None) -> dict:
+    """Additive rollup: returns long_term_monitoring_summary(conn, today)'s
+    existing dict (UNCHANGED keys, Phase 15) with new keys merged in:
+    'regime_distribution', 'legacy_regime_gap_summary',
+    'completeness_breakdown', 'event_provenance_audit',
+    'outcome_source_resolution' (source_resolution_summary(conn)),
+    'evidence_sufficiency': {'n_prospective_trading_days':
+    count_prospective_trading_days(conn), 'status': classify_evidence(n)} -
+    the SAME existing vocabulary/thresholds (ops/evidence_classification.py,
+    untouched), reused not reimplemented. This is the one function
+    Phase 16's dashboard getter calls."""
+    today = today or date.today()
+    summary = dict(long_term_monitoring_summary(conn, today=today))
+
+    n_prospective_trading_days = count_prospective_trading_days(conn)
+    summary.update({
+        "regime_distribution": compute_regime_distribution(conn),
+        "legacy_regime_gap_summary": legacy_regime_gap_summary(conn),
+        "completeness_breakdown": compute_completeness_breakdown(conn),
+        "event_provenance_audit": event_provenance_audit_summary(conn),
+        "outcome_source_resolution": source_resolution_summary(conn),
+        "evidence_sufficiency": {
+            "n_prospective_trading_days": n_prospective_trading_days,
+            "status": classify_evidence(n_prospective_trading_days),
+        },
     })
     return summary

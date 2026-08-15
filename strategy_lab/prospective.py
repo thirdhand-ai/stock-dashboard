@@ -36,7 +36,7 @@ from signals.engine import score_indicators
 from indicators.technical import compute_indicators_for_ticker
 from strategy_lab.data import RESEARCH_SOURCE
 from strategy_lab.phase10_experiments import ALL_VARIANTS, BULLISH_LABEL
-from strategy_lab.regime_history import compute_historical_regime_series
+from strategy_lab.regime_history import compute_historical_regime_series, regime_label_as_of
 
 TABLE_NAME = "research_prospective_observations"
 
@@ -151,11 +151,7 @@ def build_todays_observation(
     score = score_indicators(indicators)
 
     regime_series = compute_historical_regime_series(conn)
-    regime_label = None
-    if not regime_series.empty:
-        regime_label = regime_series.iloc[-1]["label"] if as_of_date is None else (
-            regime_series.set_index("date")["label"].get(as_of_date)
-        )
+    regime_label = regime_label_as_of(regime_series, as_of_date)
 
     from backtest.config import DEFAULT_RULES
     from backtest.scoring import STAGE_ORDER

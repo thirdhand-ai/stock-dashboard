@@ -630,6 +630,29 @@ def get_correction_audit_report(limit: int = 50) -> pd.DataFrame:
     return df.tail(limit) if not df.empty else df
 
 
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_phase16_monitoring_summary() -> dict:
+    """Phase 16: regime distribution/legacy-gap summary, completeness
+    breakdown, event-provenance audit, and outcome source-resolution
+    breakdown - a strict superset of get_long_term_monitoring_summary()'s
+    keys. Read-only; never triggers ingestion, mutation, or backfill."""
+    from ops.prospective_audit import phase16_monitoring_summary
+    with db_session() as conn:
+        return phase16_monitoring_summary(conn)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_legacy_regime_gap_report(limit: int = 200) -> pd.DataFrame:
+    """Phase 16: per-legacy-observation regime reconstruction detail
+    (ops.regime_reconstruction_audit) - informational only, no repair/write
+    path anywhere in that module."""
+    from ops.regime_reconstruction_audit import audit_legacy_regime_gaps
+    with db_session() as conn:
+        rows = audit_legacy_regime_gaps(conn)
+    df = pd.DataFrame([r.__dict__ for r in rows])
+    return df.tail(limit) if not df.empty else df
+
+
 def clear_all_caches():
     get_watchlist_overview.clear()
     get_ticker_detail.clear()
@@ -665,3 +688,5 @@ def clear_all_caches():
     get_research_run_ticker_errors.clear()
     get_long_term_monitoring_summary.clear()
     get_correction_audit_report.clear()
+    get_phase16_monitoring_summary.clear()
+    get_legacy_regime_gap_report.clear()

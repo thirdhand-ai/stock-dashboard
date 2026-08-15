@@ -19,9 +19,11 @@ from dashboard.data import (
     get_correction_audit_report,
     get_experiment_registry,
     get_experiment_registry_drift,
+    get_legacy_regime_gap_report,
     get_long_term_monitoring_summary,
     get_phase10_results,
     get_phase11_results,
+    get_phase16_monitoring_summary,
     get_production_health,
     get_prospective_audit_summary,
     get_prospective_evidence_status,
@@ -953,6 +955,49 @@ def _render_evidence_provenance_detail():
         st.caption(f"Evidence status unavailable: {e}")
 
 
+def _render_regime_provenance_detail():
+    st.header("Phase 16 — Regime / Event / Outcome Provenance Detail")
+    st.caption(
+        "Detailed legacy regime-gap table, exit-attribution-gap note, and outcome "
+        "source-resolution breakdown — read-only. Shown alongside, never merged "
+        "with, the Phase 15 provenance detail above."
+    )
+
+    st.subheader("Legacy regime-gap detail")
+    st.caption(
+        "Informational only — no repair is performed by this system. Any real "
+        "correction to a legacy row requires explicit human approval and a "
+        "separately-specced mechanism (this table has no write path)."
+    )
+    try:
+        gap_report = get_legacy_regime_gap_report()
+    except Exception as e:
+        st.caption(f"Legacy regime-gap detail unavailable: {e}")
+        gap_report = pd.DataFrame()
+    if gap_report is None or gap_report.empty:
+        st.caption("No legacy NULL-regime observations found.")
+    else:
+        st.dataframe(gap_report, use_container_width=True, hide_index=True)
+
+    try:
+        summary = get_phase16_monitoring_summary()
+    except Exception as e:
+        st.caption(f"Event/outcome provenance detail unavailable: {e}")
+        return
+
+    st.subheader("Exit-attribution gap")
+    gap_note = summary["event_provenance_audit"]["exit_attribution_gap"]
+    st.caption(gap_note["note"])
+
+    st.subheader("Outcome source-resolution breakdown")
+    resolution = summary["outcome_source_resolution"]
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Explicit", resolution["explicit"])
+    r2.metric("Resolved fallback", resolution["resolved_fallback"])
+    r3.metric("Unavailable", resolution["unavailable"])
+    r4.metric("Not yet resolved", resolution["not_yet_resolved"])
+
+
 def render():
     results = get_strategy_lab_results()
     _render_header(results if results else {})
@@ -1054,3 +1099,9 @@ def render():
         _render_evidence_provenance_detail()
     except Exception as e:
         components.empty_state("Evidence provenance / audit detail unavailable", str(e), icon="⚠️")
+
+    st.divider()
+    try:
+        _render_regime_provenance_detail()
+    except Exception as e:
+        components.empty_state("Regime / event / outcome provenance detail unavailable", str(e), icon="⚠️")
