@@ -23,7 +23,7 @@ from dashboard.data import (
     get_long_term_monitoring_summary,
     get_phase10_results,
     get_phase11_results,
-    get_phase16_monitoring_summary,
+    get_phase17_monitoring_summary,
     get_production_health,
     get_prospective_audit_summary,
     get_prospective_evidence_status,
@@ -969,11 +969,11 @@ def _render_evidence_provenance_detail():
 
 
 def _render_regime_provenance_detail():
-    st.header("Phase 16 — Regime / Event / Outcome Provenance Detail")
+    st.header("Phase 16-17 — Regime / Event / Outcome Provenance Detail")
     st.caption(
-        "Detailed legacy regime-gap table, exit-attribution-gap note, and outcome "
-        "source-resolution breakdown — read-only. Shown alongside, never merged "
-        "with, the Phase 15 provenance detail above."
+        "Detailed legacy regime-gap table, exit-attribution-gap note, exit-event "
+        "provenance, and outcome source-resolution breakdown — read-only. Shown "
+        "alongside, never merged with, the Phase 15 provenance detail above."
     )
 
     st.subheader("Legacy regime-gap detail")
@@ -993,14 +993,27 @@ def _render_regime_provenance_detail():
         st.dataframe(gap_report, use_container_width=True, hide_index=True)
 
     try:
-        summary = get_phase16_monitoring_summary()
+        summary = get_phase17_monitoring_summary()
     except Exception as e:
         st.caption(f"Event/outcome provenance detail unavailable: {e}")
         return
 
     st.subheader("Exit-attribution gap")
-    gap_note = summary["event_provenance_audit"]["exit_attribution_gap"]
+    event_audit = summary["event_provenance_audit"]
+    gap_note = event_audit["exit_attribution_gap"]
     st.caption(gap_note["note"])
+
+    st.subheader("Exit event provenance")
+    exit_provenance = event_audit["exit_event_provenance"]
+    by_event_type = exit_provenance.get("by_event_type", {})
+    if by_event_type:
+        st.dataframe(pd.DataFrame(list(by_event_type.items()), columns=["event_type", "count"]),
+                     use_container_width=True, hide_index=True)
+    ep1, ep2, ep3 = st.columns(3)
+    ep1.metric("With fingerprint", exit_provenance.get("events_with_fingerprint", 0))
+    ep2.metric("Unknown/legacy", exit_provenance.get("events_unknown_legacy", 0))
+    ep3.metric("Total exit events", exit_provenance.get("total_exit_events", 0))
+    st.caption(event_audit["experiment_b_exit_cooccurrence_note"])
 
     st.subheader("Outcome source-resolution breakdown")
     resolution = summary["outcome_source_resolution"]

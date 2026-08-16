@@ -740,6 +740,18 @@ def get_phase16_monitoring_summary() -> dict:
 
 
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_phase17_monitoring_summary() -> dict:
+    """Phase 17: regime-freshness distribution, on top of Phase 16's
+    monitoring summary (whose own 'event_provenance_audit' key already
+    grew additively to include exit-event provenance) - a strict superset
+    of get_phase16_monitoring_summary()'s keys. Read-only; never triggers
+    ingestion, mutation, or backfill."""
+    from ops.prospective_audit import phase17_monitoring_summary
+    with db_session() as conn:
+        return phase17_monitoring_summary(conn)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
 def get_legacy_regime_gap_report(limit: int = 200) -> pd.DataFrame:
     """Phase 16: per-legacy-observation regime reconstruction detail
     (ops.regime_reconstruction_audit) - informational only, no repair/write
@@ -792,3 +804,4 @@ def clear_all_caches():
     get_correction_audit_report.clear()
     get_phase16_monitoring_summary.clear()
     get_legacy_regime_gap_report.clear()
+    get_phase17_monitoring_summary.clear()

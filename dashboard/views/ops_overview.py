@@ -18,7 +18,7 @@ from dashboard.data import (
     get_long_term_monitoring_summary,
     get_ops_daily_report,
     get_ops_research_run_history,
-    get_phase16_monitoring_summary,
+    get_phase17_monitoring_summary,
     get_prospective_audit_summary,
     get_prospective_day_ledger,
     get_prospective_evidence_status,
@@ -45,6 +45,16 @@ def _render_system_health(report):
         c2.metric("Started", ph["started_at"] or "n/a")
         c3.metric("Tickers failed", ph["tickers_failed"])
         c4.metric("Market regime", mr["label"] if mr["ok"] else "n/a")
+
+        if mr.get("is_stale_vs_report_date"):
+            st.caption(f"⚠️ Live regime benchmark data as-of {mr.get('as_of_date')} lags report date {report['report_date']}.")
+
+        prf = report.get("prospective_regime_freshness") or {}
+        st.caption(
+            f"Prospective (point-in-time) regime freshness: "
+            f"{prf.get('regime_freshness_status', 'n/a') if prf.get('ok') else 'unavailable'} "
+            f"— distinct from the live regime above."
+        )
 
         if ph["status"] in ("failed", "partial_failure"):
             st.error(
@@ -317,13 +327,14 @@ def _render_evidence_provenance_audit():
 
 
 def _render_regime_provenance_monitoring():
-    st.header("Regime capture / event / outcome provenance monitoring (Phase 16)")
+    st.header("Regime capture / event / outcome provenance monitoring (Phase 16-17)")
     st.caption(
         "Regime-lookup fix monitoring, legacy regime-gap reporting, event/experiment "
-        "provenance, and row-level completeness classification - all read-only, "
-        "informational, no repair/backfill path anywhere in this section."
+        "provenance (entry AND exit), regime-freshness distribution, and row-level "
+        "completeness classification - all read-only, informational, no repair/backfill "
+        "path anywhere in this section."
     )
-    summary = get_phase16_monitoring_summary()
+    summary = get_phase17_monitoring_summary()
 
     evidence = summary["evidence_sufficiency"]
     label = evidence["status"]
@@ -344,6 +355,15 @@ def _render_regime_provenance_monitoring():
         )
     else:
         st.caption("No observations recorded yet.")
+
+    st.markdown("**Regime freshness distribution (prospective observations)**")
+    freshness = summary["regime_freshness_distribution"]
+    by_status = freshness.get("by_status", {})
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric("FRESH", by_status.get("FRESH", 0))
+    f2.metric("STALE", by_status.get("STALE", 0))
+    f3.metric("UNAVAILABLE", by_status.get("UNAVAILABLE", 0))
+    f4.metric("NULL (pre-Phase 17)", by_status.get("NULL", 0))
 
     st.markdown("**Legacy regime-gap summary** — informational only, no repair performed here.")
     gap_summary = summary["legacy_regime_gap_summary"]
@@ -371,8 +391,11 @@ def _render_regime_provenance_monitoring():
     st.markdown("**Event type breakdown**")
     event_audit = summary["event_provenance_audit"]
     breakdown = event_audit["event_type_breakdown"]
-    st.caption("entry_attributable (variant-specific) vs shared_signal_detection (not variant-specific by design)")
-    ec1, ec2 = st.columns(2)
+    st.caption(
+        "entry_attributable (variant-specific) vs exit_attributable (variant-specific, "
+        "Phase 17) vs shared_signal_detection (not variant-specific by design)"
+    )
+    ec1, ec2, ec3 = st.columns(3)
     with ec1:
         st.markdown("_Entry-attributable_")
         entry = breakdown.get("entry_attributable", {})
@@ -382,6 +405,14 @@ def _render_regime_provenance_monitoring():
         else:
             st.caption("No entry-attributable events recorded yet.")
     with ec2:
+        st.markdown("_Exit-attributable_")
+        exit_attributable = breakdown.get("exit_attributable", {})
+        if exit_attributable:
+            st.dataframe(pd.DataFrame(list(exit_attributable.items()), columns=["event_type", "count"]),
+                         use_container_width=True, hide_index=True)
+        else:
+            st.caption("No exit-attributable events recorded yet.")
+    with ec3:
         st.markdown("_Shared signal detection_")
         shared = breakdown.get("shared_signal_detection", {})
         if shared:
@@ -392,6 +423,18 @@ def _render_regime_provenance_monitoring():
 
     gap_note = event_audit["exit_attribution_gap"]
     st.caption(f"Exit-attribution gap: {gap_note['note']}")
+
+    st.markdown("**Exit event provenance**")
+    exit_provenance = event_audit["exit_event_provenance"]
+    by_event_type = exit_provenance.get("by_event_type", {})
+    if by_event_type:
+        st.dataframe(pd.DataFrame(list(by_event_type.items()), columns=["event_type", "count"]),
+                     use_container_width=True, hide_index=True)
+    ep1, ep2, ep3 = st.columns(3)
+    ep1.metric("With fingerprint", exit_provenance.get("events_with_fingerprint", 0))
+    ep2.metric("Unknown/legacy", exit_provenance.get("events_unknown_legacy", 0))
+    ep3.metric("Total exit events", exit_provenance.get("total_exit_events", 0))
+    st.caption(event_audit["experiment_b_exit_cooccurrence_note"])
 
     st.markdown("**Outcome source-resolution breakdown**")
     resolution = summary["outcome_source_resolution"]

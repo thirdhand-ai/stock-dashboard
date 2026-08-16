@@ -29,11 +29,16 @@ EVENT_VOLUME_ADVANCE = "volume_advance"
 EVENT_CONTROL_ENTRY = "control_entry"
 EVENT_EXPERIMENT_A_ENTRY = "experiment_a_entry"
 EVENT_EXPERIMENT_B_ENTRY = "experiment_b_entry"
+EVENT_CONTROL_EXIT = "control_exit"
+EVENT_EXPERIMENT_A_EXIT = "experiment_a_exit"
+EVENT_EXPERIMENT_B_EXIT_TECHNICAL = "experiment_b_exit_technical"
+EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS = "experiment_b_exit_regime_loss"
 
 ALL_EVENT_TYPES = (
     EVENT_SCORE_CROSSING, EVENT_TREND_ADVANCE, EVENT_MOMENTUM_ADVANCE, EVENT_VOLUME_ADVANCE,
     EVENT_CONTROL_ENTRY, EVENT_EXPERIMENT_A_ENTRY, EVENT_EXPERIMENT_B_ENTRY,
-)
+    EVENT_CONTROL_EXIT, EVENT_EXPERIMENT_A_EXIT, EVENT_EXPERIMENT_B_EXIT_TECHNICAL, EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS,
+)  # 11 total (was 7)
 
 _CREATE_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {EVENT_TABLE_NAME} (
@@ -98,6 +103,42 @@ def _entry_transition_events(prev_row: Optional[dict], curr_row: dict) -> List[s
     return events
 
 
+def _exit_transition_events(prev_row: Optional[dict], curr_row: dict) -> List[str]:
+    """Same False->True transition convention as _entry_transition_events -
+    a ticker's very first observation is never an exit event; a condition
+    that stays continuously true produces exactly one event, on the day it
+    first became true.
+
+    Decision (both-true-simultaneously case): if, on the SAME
+    (ticker, observation_date), BOTH experiment_b_exit_technical_signal AND
+    experiment_b_exit_regime_loss_signal newly transition True (e.g. a
+    ticker's score/stage crosses the technical exit floor on the exact same
+    day the regime itself leaves bullish_trend), BOTH
+    EVENT_EXPERIMENT_B_EXIT_TECHNICAL and EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS
+    are recorded independently - never merged, never prioritized/deduped
+    into one. Justification: these are two independently-defined,
+    independently-meaningful conditions (not two labels for one underlying
+    fact), and the existing EVENT_EXPERIMENT_A_ENTRY/EVENT_EXPERIMENT_B_ENTRY
+    co-occurrence (Phase 16 §0.2 - both variants share one entry rule and
+    always fire together) already establishes the precedent that multiple
+    independently-true event types recorded on the same (ticker, date) is
+    normal, not an anomaly requiring special-case suppression."""
+    if prev_row is None:
+        return []
+    events = []
+    for field_name, event_type in (
+        ("control_exit_signal", EVENT_CONTROL_EXIT),
+        ("experiment_a_exit_signal", EVENT_EXPERIMENT_A_EXIT),
+        ("experiment_b_exit_technical_signal", EVENT_EXPERIMENT_B_EXIT_TECHNICAL),
+        ("experiment_b_exit_regime_loss_signal", EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS),
+    ):
+        was = bool(prev_row.get(field_name))
+        now = bool(curr_row.get(field_name))
+        if now and not was:
+            events.append(event_type)
+    return events
+
+
 def detect_events_for_new_observation(conn, curr_row: dict) -> List[str]:
     """curr_row: an observation dict/row (see strategy_lab.prospective.
     build_todays_observation), already or about-to-be recorded. Compares
@@ -117,6 +158,7 @@ def detect_events_for_new_observation(conn, curr_row: dict) -> List[str]:
         event_types.append(EVENT_SCORE_CROSSING)
     event_types += _stage_advance_events(prev_stage, curr_row["stage"])
     event_types += _entry_transition_events(prev_row, curr_row)
+    event_types += _exit_transition_events(prev_row, curr_row)
     return event_types
 
 

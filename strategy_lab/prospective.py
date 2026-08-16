@@ -32,11 +32,16 @@ import pandas as pd
 from backtest.scoring import compute_score_series
 from db.price_repository import load_price_history
 from indicators.technical import MIN_REQUIRED_ROWS, enrich_with_indicators
+from research.config import DEFAULT_REGIME_CONFIG
 from signals.engine import score_indicators
 from indicators.technical import compute_indicators_for_ticker
 from strategy_lab.data import RESEARCH_SOURCE
 from strategy_lab.phase10_experiments import ALL_VARIANTS, BULLISH_LABEL
-from strategy_lab.regime_history import compute_historical_regime_series, regime_label_as_of
+from strategy_lab.regime_history import (
+    classify_regime_freshness,
+    compute_historical_regime_series,
+    regime_label_and_date_as_of,
+)
 
 TABLE_NAME = "research_prospective_observations"
 
@@ -89,6 +94,26 @@ def ensure_schema(conn) -> None:
     # row is ever touched.
     if "config_fingerprint" not in cols:
         conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN config_fingerprint TEXT")
+    # Phase 17 §2.1 (Area B): additive migration for regime-benchmark
+    # provenance/freshness columns. No existing row is ever touched.
+    if "regime_benchmark" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN regime_benchmark TEXT")
+    if "regime_benchmark_source" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN regime_benchmark_source TEXT")
+    if "regime_benchmark_data_date" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN regime_benchmark_data_date TEXT")
+    if "regime_freshness_status" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN regime_freshness_status TEXT")
+    # Phase 17 §3.1 (Area C): additive migration for exit-signal columns.
+    # No existing row is ever touched.
+    if "control_exit_signal" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN control_exit_signal INTEGER")
+    if "experiment_a_exit_signal" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN experiment_a_exit_signal INTEGER")
+    if "experiment_b_exit_technical_signal" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN experiment_b_exit_technical_signal INTEGER")
+    if "experiment_b_exit_regime_loss_signal" not in cols:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN experiment_b_exit_regime_loss_signal INTEGER")
     conn.commit()
 
 
@@ -99,6 +124,14 @@ def record_observation(
     macd_signal: Optional[float], volume_ratio: Optional[float], close: Optional[float],
     source: Optional[str] = None, methodology_version: str = METHODOLOGY_VERSION,
     config_fingerprint: Optional[str] = None,
+    regime_benchmark: Optional[str] = None,
+    regime_benchmark_source: Optional[str] = None,
+    regime_benchmark_data_date: Optional[str] = None,
+    regime_freshness_status: Optional[str] = None,
+    control_exit_signal: Optional[bool] = None,
+    experiment_a_exit_signal: Optional[bool] = None,
+    experiment_b_exit_technical_signal: Optional[bool] = None,
+    experiment_b_exit_regime_loss_signal: Optional[bool] = None,
 ) -> bool:
     """Insert-only. A pre-existing (ticker, observation_date) row is left
     completely untouched (DO NOTHING) - this function can never overwrite an
@@ -107,7 +140,14 @@ def record_observation(
     outcome is known.
 
     `config_fingerprint` (Phase 15 §1.1): defaults to None - a caller that
-    doesn't pass it gets NULL, never a guessed value."""
+    doesn't pass it gets NULL, never a guessed value.
+
+    `regime_benchmark`/`regime_benchmark_source`/`regime_benchmark_data_date`/
+    `regime_freshness_status` (Phase 17 §2.1, Area B) and
+    `control_exit_signal`/`experiment_a_exit_signal`/
+    `experiment_b_exit_technical_signal`/`experiment_b_exit_regime_loss_signal`
+    (Phase 17 §3.1, Area C): all default to None - a caller that doesn't
+    pass them gets NULL, never a guessed value."""
     ensure_schema(conn)
     cur = conn.cursor()
     cur.execute(
@@ -116,15 +156,22 @@ def record_observation(
             created_at, observation_date, ticker, score, stage, regime,
             control_entry_signal, experiment_a_entry_signal, experiment_b_entry_signal,
             adx, rsi, macd, macd_signal, volume_ratio, close, source, methodology_version,
-            config_fingerprint
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            config_fingerprint, regime_benchmark, regime_benchmark_source, regime_benchmark_data_date,
+            regime_freshness_status, control_exit_signal, experiment_a_exit_signal,
+            experiment_b_exit_technical_signal, experiment_b_exit_regime_loss_signal
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(ticker, observation_date) DO NOTHING
         """,
         (
             datetime.now(timezone.utc).isoformat(), observation_date, ticker, score, stage, regime,
             int(control_entry_signal), int(experiment_a_entry_signal), int(experiment_b_entry_signal),
             adx, rsi, macd, macd_signal, volume_ratio, close, source, methodology_version,
-            config_fingerprint,
+            config_fingerprint, regime_benchmark, regime_benchmark_source, regime_benchmark_data_date,
+            regime_freshness_status,
+            int(control_exit_signal) if control_exit_signal is not None else None,
+            int(experiment_a_exit_signal) if experiment_a_exit_signal is not None else None,
+            int(experiment_b_exit_technical_signal) if experiment_b_exit_technical_signal is not None else None,
+            int(experiment_b_exit_regime_loss_signal) if experiment_b_exit_regime_loss_signal is not None else None,
         ),
     )
     conn.commit()
@@ -151,17 +198,35 @@ def build_todays_observation(
     score = score_indicators(indicators)
 
     regime_series = compute_historical_regime_series(conn)
-    regime_label = regime_label_as_of(regime_series, as_of_date)
+    regime_label, regime_benchmark_data_date = regime_label_and_date_as_of(regime_series, as_of_date)
+    observation_date_value = as_of_date or indicators.latest_date
+    regime_freshness_status = classify_regime_freshness(observation_date_value, regime_benchmark_data_date)
 
     from backtest.config import DEFAULT_RULES
     from backtest.scoring import STAGE_ORDER
     entry_qualifies = STAGE_ORDER[score.highest_confirmed_stage] >= STAGE_ORDER[DEFAULT_RULES.entry_min_stage] and score.score >= DEFAULT_RULES.entry_min_score
     is_bullish = regime_label == BULLISH_LABEL
 
+    # Phase 17 §3.1 (Area C): the same "technical exit" computation
+    # trading.signals_bridge.exit_qualifies uses, hand-duplicated inline
+    # (§0.3 decision) rather than imported - mirrors the existing
+    # entry_qualifies inline pattern immediately above.
+    technical_exit_qualifies = (
+        STAGE_ORDER[score.highest_confirmed_stage] < STAGE_ORDER[DEFAULT_RULES.exit_stage_floor]
+        or score.score <= DEFAULT_RULES.exit_max_score
+    )
+    # "regime loss" is a KNOWN condition, not "unknown regime" - a None
+    # regime_label (Area A/B stale-or-missing case) must NEVER be reported as
+    # a regime-loss exit signal, since we do not actually know the regime left
+    # bullish_trend when we don't know the regime at all. Fabricating a
+    # regime-loss claim off a data gap would misattribute an EXPERIMENT_B exit
+    # event to a condition that was never actually observed.
+    experiment_b_regime_loss = regime_label is not None and regime_label != BULLISH_LABEL
+
     from db.price_repository import resolve_source
 
     return {
-        "observation_date": as_of_date or indicators.latest_date,
+        "observation_date": observation_date_value,
         "ticker": ticker,
         "score": score.score,
         "stage": score.highest_confirmed_stage,
@@ -174,6 +239,14 @@ def build_todays_observation(
         "source": resolve_source(conn, ticker),
         "methodology_version": METHODOLOGY_VERSION,
         "config_fingerprint": config_fingerprint,
+        "regime_benchmark": DEFAULT_REGIME_CONFIG.primary_benchmark,
+        "regime_benchmark_source": RESEARCH_SOURCE,
+        "regime_benchmark_data_date": regime_benchmark_data_date,
+        "regime_freshness_status": regime_freshness_status,
+        "control_exit_signal": technical_exit_qualifies,
+        "experiment_a_exit_signal": technical_exit_qualifies,       # identical rule to CONTROL - phase10_experiments.py: A's exit is "original frozen exit only", same as CONTROL
+        "experiment_b_exit_technical_signal": technical_exit_qualifies,  # same shared technical rule
+        "experiment_b_exit_regime_loss_signal": experiment_b_regime_loss,
     }
 
 

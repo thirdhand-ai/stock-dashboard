@@ -30,6 +30,8 @@ from typing import List, Optional
 
 from automation.trading_calendar import is_likely_trading_day
 from db.run_history_repository import STATUS_SUCCESS, load_run_history
+from research.config import DEFAULT_REGIME_CONFIG
+from strategy_lab.data import RESEARCH_SOURCE, fetch_and_cache_universe
 from strategy_lab.outcome_maturation import mature_outcomes
 from strategy_lab.prospective import build_todays_observation, record_observation
 from strategy_lab.prospective_events import record_events_for_observation
@@ -132,6 +134,53 @@ def _compute_config_fingerprint_safe(conn, run_id: int, trading_date: date) -> O
         return None
 
 
+def _refresh_benchmark_data_safe(conn, run_id: int, trading_date: date) -> dict:
+    """Best-effort SPY/QQQ RESEARCH_SOURCE refresh, run once per job run,
+    BEFORE any observation is built. Mirrors _compute_config_fingerprint_safe's
+    fail-open convention exactly: a failure here never fails the job, is
+    recorded as a diagnostic ticker error (ticker=<primary benchmark or
+    None>), and the job proceeds using whatever SPY/QQQ data is already
+    cached - regime_label_as_of (Phase 16) degrades correctly regardless
+    (falls back to the most recent available prior label, never fabricates).
+
+    Returns {'primary_benchmark': str, 'primary_fetch_status': str
+    ('fetched'|'cached'|'failed'|'exception'), 'secondary_benchmark':
+    Optional[str], 'secondary_fetch_status': Optional[str]} - NOT persisted
+    to research_run_history (no new column added to that table); purely an
+    in-memory diagnostic for this call/its tests. A failure is ALSO recorded
+    via the existing research_run_ticker_errors mechanism (ticker=None on a
+    total exception, ticker=primary_benchmark on a reported per-ticker
+    'failed' status), so historical failures remain visible through the
+    existing table without a schema change."""
+    primary = DEFAULT_REGIME_CONFIG.primary_benchmark
+    secondary = DEFAULT_REGIME_CONFIG.secondary_benchmark
+    tickers = [t for t in (primary, secondary) if t]
+    try:
+        report = fetch_and_cache_universe(conn, tickers)
+    except Exception as e:
+        logger.warning("research job: benchmark refresh raised for %s: %s", tickers, e)
+        record_ticker_error(
+            conn, run_id, ticker=None, source=RESEARCH_SOURCE, trading_date=trading_date.isoformat(),
+            reason=f"benchmark refresh (regime freshness): {type(e).__name__}: {e}",
+        )
+        return {
+            "primary_benchmark": primary, "primary_fetch_status": "exception",
+            "secondary_benchmark": secondary, "secondary_fetch_status": "exception",
+        }
+
+    primary_status = report.get(primary, {}).get("status", "unknown")
+    secondary_status = report.get(secondary, {}).get("status", "unknown") if secondary else None
+    if primary_status == "failed":
+        record_ticker_error(
+            conn, run_id, ticker=primary, source=RESEARCH_SOURCE, trading_date=trading_date.isoformat(),
+            reason=f"benchmark refresh (regime freshness): primary benchmark fetch failed: {report.get(primary, {}).get('error')}",
+        )
+    return {
+        "primary_benchmark": primary, "primary_fetch_status": primary_status,
+        "secondary_benchmark": secondary, "secondary_fetch_status": secondary_status,
+    }
+
+
 def load_ticker_errors_for_run(conn, run_id: int):
     import pandas as pd
     ensure_ticker_errors_schema(conn)
@@ -153,6 +202,7 @@ class ResearchRunResult:
     outcomes_matured: int = 0
     errors: List[str] = field(default_factory=list)
     skip_reason: Optional[str] = None
+    benchmark_refresh_status: Optional[dict] = None
 
 
 def _todays_production_run_succeeded(conn, today: date) -> bool:
@@ -235,7 +285,14 @@ def run_research_job(conn, today: Optional[date] = None, tickers: Optional[List[
         )
 
     run_id = _start_run(conn, today)
+
+    # Phase 17 §1.1: best-effort SPY/QQQ RESEARCH_SOURCE refresh, run once
+    # per job run, BEFORE any observation is built - regime lookups in the
+    # per-ticker loop below depend on this. Fail-open: never fails the job.
+    benchmark_refresh = _refresh_benchmark_data_safe(conn, run_id, today)
+
     result = ResearchRunResult(run_id=run_id, status=STATUS_SUCCESS_RESEARCH, trading_date=today.isoformat(), tickers_attempted=len(tickers))
+    result.benchmark_refresh_status = benchmark_refresh
 
     # Phase 15 §1.4: computed ONCE per job run, immediately after the run
     # starts, so every observation/event this run produces shares an

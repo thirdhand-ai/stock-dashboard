@@ -15,6 +15,7 @@ from db.schema import init_db
 from ops.event_provenance_audit import (
     ENTRY_AB_COOCCURRENCE_NOTE,
     EVENT_TYPE_TO_VARIANT,
+    EXIT_EVENT_TYPE_TO_VARIANT,
     compute_event_provenance_coverage,
     compute_event_type_breakdown,
     compute_exit_attribution_gap_note,
@@ -122,10 +123,19 @@ def test_event_type_breakdown_buckets_entry_attributable_vs_shared():
     assert breakdown["entry_attributable"][EVENT_EXPERIMENT_B_ENTRY] == 1
     assert breakdown["shared_signal_detection"][EVENT_SCORE_CROSSING] == 1
     assert breakdown["total_events"] == 4
-    # All 4 shared types present (0-filled), never omitted.
+    # All types present (0-filled), never omitted. Phase 17 §3.3: the
+    # three-way branch means a type not in EVENT_TYPE_TO_VARIANT (entry) now
+    # lands in exit_attributable if it's an exit type, else
+    # shared_signal_detection - this loop was updated (not one of the 2
+    # explicitly-documented §3.3 test updates, but a direct, mechanical
+    # consequence of implementing the same documented three-way branch; see
+    # docs/specs/phase17.md §3.4 item 10's own regression requirement
+    # against this exact test).
     for et in ALL_EVENT_TYPES:
         if et in EVENT_TYPE_TO_VARIANT:
             assert et in breakdown["entry_attributable"]
+        elif et in EXIT_EVENT_TYPE_TO_VARIANT:
+            assert et in breakdown["exit_attributable"]
         else:
             assert et in breakdown["shared_signal_detection"]
 
@@ -189,11 +199,13 @@ def test_events_unknown_legacy_empty_db():
 # --- §3.1 item 5: exit-attribution gap note - real absence, dynamic monkeypatch ---
 
 
-def test_exit_attribution_gap_note_real_all_event_types_is_false():
+def test_exit_attribution_gap_note_real_all_event_types_is_true_post_phase17():
     result = compute_exit_attribution_gap_note()
-    assert result["exit_event_types_exist"] is False
-    assert result["exit_event_types"] == []
-    assert "not built" in result["note"] or "Open Question" in result["note"]
+    assert result["exit_event_types_exist"] is True
+    assert set(result["exit_event_types"]) == {
+        "control_exit", "experiment_a_exit", "experiment_b_exit_technical", "experiment_b_exit_regime_loss",
+    }
+    assert "found" in result["note"].lower() or "observable" in result["note"].lower()
 
 
 def test_exit_attribution_gap_note_flips_true_with_monkeypatched_all_event_types(monkeypatch):
@@ -216,6 +228,7 @@ def test_event_provenance_audit_summary_rollup_shape():
     summary = event_provenance_audit_summary(conn)
     assert set(summary.keys()) == {
         "event_type_breakdown", "event_provenance_coverage", "exit_attribution_gap", "entry_ab_cooccurrence_note",
+        "exit_event_provenance", "experiment_b_exit_cooccurrence_note",
     }
     assert summary["entry_ab_cooccurrence_note"] == ENTRY_AB_COOCCURRENCE_NOTE
 

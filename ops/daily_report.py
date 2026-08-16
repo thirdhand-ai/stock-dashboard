@@ -22,6 +22,7 @@ from config.settings import WATCHLIST
 from db.run_history_repository import load_run_history
 from research.regime import compute_market_regime
 from signals.engine import SignalScore
+from strategy_lab.prospective import load_observations
 from strategy_lab.research_automation import load_research_run_history
 from trading import client as trading_client
 from trading import portfolio as trading_portfolio
@@ -90,6 +91,27 @@ class RegimeSection:
     ok: bool
     label: Optional[str]
     reason: Optional[str]
+    as_of_date: Optional[str] = None          # NEW: the LIVE compute_market_regime's own result.as_of_date, previously discarded
+    benchmark: Optional[str] = None           # NEW: result.benchmark
+    is_stale_vs_report_date: Optional[bool] = None  # NEW: True iff as_of_date != report_date (best-effort calendar-day compare, NOT NYSE-session-aware - see caption text)
+
+
+@dataclass
+class ProspectiveRegimeFreshnessSection:
+    """Freshness of the POINT-IN-TIME regime lookup used by TODAY's
+    prospective research observations (strategy_lab/prospective.py::
+    build_todays_observation, Area A/B of Phase 17) - DISTINCT from
+    `market_regime` above (the LIVE, non-point-in-time
+    research.regime.compute_market_regime read). Sourced from the most
+    recent research_prospective_observations row for report_date (any
+    ticker - these fields are shared across every ticker observed the same
+    day, since they describe one shared benchmark lookup), never
+    recomputed here."""
+    ok: bool
+    reason: Optional[str]
+    regime_benchmark: Optional[str] = None
+    regime_benchmark_data_date: Optional[str] = None
+    regime_freshness_status: Optional[str] = None
 
 
 @dataclass
@@ -101,6 +123,7 @@ class DailyReport:
     paper_portfolio: PaperPortfolioSection
     research_job: ResearchJobSection
     market_regime: RegimeSection
+    prospective_regime_freshness: ProspectiveRegimeFreshnessSection   # NEW
 
 
 def _build_production_health(conn) -> ProductionHealthSection:
@@ -223,12 +246,32 @@ def _build_research_job(conn) -> ResearchJobSection:
     )
 
 
-def _build_market_regime(conn) -> RegimeSection:
+def _build_market_regime(conn, today: date) -> RegimeSection:
     try:
         result = compute_market_regime(conn)
     except Exception as e:
         return RegimeSection(ok=False, label=None, reason=str(e))
-    return RegimeSection(ok=result.ok, label=result.label, reason=result.reason)
+    is_stale = (result.as_of_date is not None and result.as_of_date != today.isoformat()) if result.ok else None
+    return RegimeSection(
+        ok=result.ok, label=result.label, reason=result.reason,
+        as_of_date=result.as_of_date, benchmark=result.benchmark, is_stale_vs_report_date=is_stale,
+    )
+
+
+def _build_prospective_regime_freshness(conn, today: date) -> ProspectiveRegimeFreshnessSection:
+    observations = load_observations(conn)
+    if observations.empty:
+        return ProspectiveRegimeFreshnessSection(ok=False, reason="no prospective observations recorded yet")
+    day_obs = observations[observations["observation_date"] == today.isoformat()]
+    if day_obs.empty:
+        return ProspectiveRegimeFreshnessSection(ok=False, reason=f"no prospective observation recorded for {today.isoformat()} yet")
+    row = day_obs.iloc[0]
+    return ProspectiveRegimeFreshnessSection(
+        ok=True, reason=None,
+        regime_benchmark=row.get("regime_benchmark"),
+        regime_benchmark_data_date=row.get("regime_benchmark_data_date"),
+        regime_freshness_status=row.get("regime_freshness_status"),
+    )
 
 
 def build_daily_report(conn, today: Optional[date] = None) -> DailyReport:
@@ -240,7 +283,8 @@ def build_daily_report(conn, today: Optional[date] = None) -> DailyReport:
         ticker_signals=_build_ticker_signals(conn),
         paper_portfolio=_build_paper_portfolio(conn),
         research_job=_build_research_job(conn),
-        market_regime=_build_market_regime(conn),
+        market_regime=_build_market_regime(conn, today),
+        prospective_regime_freshness=_build_prospective_regime_freshness(conn, today),
     )
 
 
@@ -302,11 +346,24 @@ def render_report_text(report: DailyReport) -> str:
         lines.append(f"  Skip reason: {rj.skip_reason}")
     lines.append("")
 
-    lines.append("-- Market Regime --")
+    lines.append("-- Market Regime (live) --")
     mr = report.market_regime
     if mr.ok:
-        lines.append(f"  Label: {mr.label}")
+        lines.append(f"  Label: {mr.label}  Benchmark: {mr.benchmark}  As-of date: {mr.as_of_date}")
+        if mr.is_stale_vs_report_date:
+            lines.append(f"  NOTE: live regime benchmark data lags report_date ({report.report_date}) - real, not fabricated.")
     else:
         lines.append(f"  Unavailable: {mr.reason}")
+    lines.append("")
+
+    lines.append("-- Prospective Regime Freshness (research observations) --")
+    prf = report.prospective_regime_freshness
+    if prf.ok:
+        lines.append(
+            f"  Benchmark: {prf.regime_benchmark}  Data date: {prf.regime_benchmark_data_date}  "
+            f"Status: {prf.regime_freshness_status}"
+        )
+    else:
+        lines.append(f"  Unavailable: {prf.reason}")
 
     return "\n".join(lines)

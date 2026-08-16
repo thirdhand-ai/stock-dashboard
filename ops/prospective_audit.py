@@ -60,6 +60,13 @@ from ops.regime_reconstruction_audit import legacy_regime_gap_summary
 from strategy_lab.outcome_maturation import source_resolution_summary
 from strategy_lab.prospective_events import load_events
 
+# --- Phase 17 additive imports (§4.2) ---
+from strategy_lab.regime_history import (
+    REGIME_FRESHNESS_FRESH,
+    REGIME_FRESHNESS_STALE,
+    REGIME_FRESHNESS_UNAVAILABLE,
+)
+
 # Internal string literal for the "crashed mid-run" convention documented in
 # docs/specs/phase14.md §0.3 - research_run_history's own DEFAULT 'running'
 # (see strategy_lab/research_automation.py's _CREATE_TABLE_SQL). Not
@@ -627,4 +634,46 @@ def phase16_monitoring_summary(conn, today: Optional[date] = None) -> dict:
             "status": classify_evidence(n_prospective_trading_days),
         },
     })
+    return summary
+
+
+# --- Phase 17 §4.2: additive functions only. Everything below reuses
+# existing load_* functions/strategy_lab.regime_history's own freshness
+# constants rather than re-deriving anything - still read-only, still no
+# retrospective backfill. ---
+
+
+def compute_regime_freshness_distribution(conn) -> dict:
+    """{'by_status': {FRESH:n, STALE:n, UNAVAILABLE:n, 'NULL':n (rows
+    created before this Phase 17 migration - column not yet populated for
+    that row, disambiguated from a genuine UNAVAILABLE outcome)}, 'total'}
+    - a pure rollup of load_observations(conn)['regime_freshness_status'],
+    mirroring compute_regime_distribution's (Phase 16) own literal 'NULL'
+    bucket convention exactly."""
+    observations = load_observations(conn)
+    by_status: Dict[str, int] = {
+        REGIME_FRESHNESS_FRESH: 0, REGIME_FRESHNESS_STALE: 0, REGIME_FRESHNESS_UNAVAILABLE: 0, "NULL": 0,
+    }
+    if observations.empty or "regime_freshness_status" not in observations.columns:
+        return {"by_status": by_status, "total": 0}
+
+    for value in observations["regime_freshness_status"]:
+        label = "NULL" if value is None or (isinstance(value, float) and pd.isna(value)) else str(value)
+        by_status[label] = by_status.get(label, 0) + 1
+
+    return {"by_status": by_status, "total": int(len(observations))}
+
+
+def phase17_monitoring_summary(conn, today: Optional[date] = None) -> dict:
+    """Additive rollup: returns phase16_monitoring_summary(conn, today)'s
+    existing dict (UNCHANGED keys - the exit-event provenance additions
+    from Area C flow through automatically via the pre-existing
+    'event_provenance_audit' key, since event_provenance_audit_summary's
+    OWN return dict grew additively, §3.3 - no key rename needed here) with
+    ONE new top-level key: 'regime_freshness_distribution'. Mirrors Phase
+    16's own phase16_monitoring_summary-wraps-long_term_monitoring_summary
+    layering exactly - never mutates phase16_monitoring_summary itself."""
+    today = today or date.today()
+    summary = dict(phase16_monitoring_summary(conn, today=today))
+    summary["regime_freshness_distribution"] = compute_regime_freshness_distribution(conn)
     return summary

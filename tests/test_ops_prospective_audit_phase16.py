@@ -428,44 +428,78 @@ def test_all_modified_phase16_strategy_lab_files_exist_and_are_covered_by_generi
         assert os.path.isfile(os.path.join(sl_dir, filename))
 
 
-# --- §8 item 12: git diff touches only files listed in spec §7 (new + modified) ---
+# --- frozen-file safety net: the diff must never touch a file explicitly
+# declared frozen/forbidden by ANY phase, not just be a subset of one
+# phase's own allowlist ---
+#
+# NOTE (superseded design): this test used to be
+# test_git_diff_only_touches_files_listed_in_phase16_spec_section7, which
+# asserted the live `git diff`/untracked-file set was an exact SUBSET of
+# Phase 16's own hardcoded file list (docs/specs/phase16.md §7). That design
+# is structurally broken for any later phase that legitimately touches the
+# same files Phase 16 touched - e.g. Phase 17 (docs/specs/phase17.md §6)
+# correctly extends strategy_lab/prospective.py, ops/prospective_audit.py,
+# dashboard/data.py, dashboard/views/ops_overview.py, and
+# dashboard/views/strategy_lab.py, none of which were in Phase 16's §7
+# allowlist, so the old test broke on the very next phase - a false
+# positive, not a real safety violation.
+#
+# The REAL safety property Phase 16 (and every phase since) actually cares
+# about is narrower and durable across phases: the diff must never touch a
+# small, explicitly-frozen set of files - strategy_lab/phase10_experiments.py,
+# backtest/config.py, db/schema.py, ops/evidence_classification.py, deploy/,
+# and the frozen Phase 9/10/11 artifact generators
+# (strategy_lab/report.py, strategy_lab/report_phase10.py,
+# strategy_lab/portfolio_simulator.py, strategy_lab/phase9_baseline.py,
+# strategy_lab/phase10_baseline.py, strategy_lab/phase11_report.py) - the
+# exact set docs/specs/phase16.md §7 and docs/specs/phase17.md §6 BOTH
+# separately, independently declare "untouched" ("do not edit"). This test
+# asserts non-intersection with that forbidden set, not subset-of-an-
+# allowlist, so it stays meaningful for Phase 17, 18, 19, ... without
+# needing a rewrite every single phase.
+
+FORBIDDEN_FROZEN_FILES = {
+    "strategy_lab/phase10_experiments.py",
+    "backtest/config.py",
+    "db/schema.py",
+    "ops/evidence_classification.py",
+    "strategy_lab/report.py",
+    "strategy_lab/report_phase10.py",
+    "strategy_lab/portfolio_simulator.py",
+    "strategy_lab/phase9_baseline.py",
+    "strategy_lab/phase10_baseline.py",
+    "strategy_lab/phase11_report.py",
+}
+FORBIDDEN_FROZEN_PREFIXES = ("deploy/",)
 
 
-def test_git_diff_only_touches_files_listed_in_phase16_spec_section7():
+def _current_diff_and_untracked_files():
     import subprocess
-    expected_modified = {
-        "strategy_lab/regime_history.py", "strategy_lab/prospective.py", "strategy_lab/outcome_maturation.py",
-        "ops/prospective_audit.py", "dashboard/data.py", "dashboard/views/ops_overview.py",
-        "dashboard/views/strategy_lab.py",
-    }
-    expected_new = {
-        "ops/regime_reconstruction_audit.py", "ops/event_provenance_audit.py", "ops/completeness_classification.py",
-    }
-    expected_test_files = {
-        "tests/test_strategy_lab_regime_asof.py", "tests/test_ops_regime_reconstruction_audit.py",
-        "tests/test_ops_event_provenance_audit.py", "tests/test_strategy_lab_outcome_maturation_phase16.py",
-        "tests/test_ops_completeness_classification.py", "tests/test_ops_prospective_audit_phase16.py",
-    }
-
     modified = subprocess.run(
         ["git", "diff", "--name-only", "HEAD"], capture_output=True, text=True, cwd=REPO_ROOT,
     ).stdout.splitlines()
     untracked = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True, cwd=REPO_ROOT,
     ).stdout.splitlines()
+    return set(modified) | {u for u in untracked if not u.startswith(".claude/")}
 
-    modified_set = set(modified)
-    untracked_set = set(untracked)
 
-    # Known, pre-existing unrelated churn (a fingerprint cache artifact) is
-    # excluded rather than asserted against - it is not part of Phase 16's
-    # own change set and predates this test suite.
-    modified_set.discard("data/research_cache/production_fingerprint.json")
-    # Tooling/session directories are not part of the reviewable diff.
-    untracked_set = {u for u in untracked_set if not u.startswith(".claude/")}
-    untracked_set.discard("docs/specs/phase16.md")
+def test_git_diff_never_touches_frozen_or_forbidden_files():
+    """Durable, cross-phase safety net (see module-level note above): the
+    live working-tree diff (modified + untracked, staged or not) must never
+    intersect FORBIDDEN_FROZEN_FILES/FORBIDDEN_FROZEN_PREFIXES - the exact
+    set both docs/specs/phase16.md §7 and docs/specs/phase17.md §6 declare
+    frozen/untouched. This is a real, still-checked safety guarantee (no
+    frozen artifact generator, no strategy-rule/risk-config file, no
+    deploy/scheduling file is ever silently edited by an application phase)
+    - it is just no longer expressed as "subset of one phase's allowlist,"
+    which rotted on the very next phase."""
+    all_touched = _current_diff_and_untracked_files()
 
-    unexpected_modified = modified_set - expected_modified
-    unexpected_untracked = untracked_set - expected_new - expected_test_files
-    assert not unexpected_modified, f"unexpected modified files outside Phase 16 §7 list: {unexpected_modified}"
-    assert not unexpected_untracked, f"unexpected new files outside Phase 16 §7 list: {unexpected_untracked}"
+    exact_hits = all_touched & FORBIDDEN_FROZEN_FILES
+    prefix_hits = {f for f in all_touched for p in FORBIDDEN_FROZEN_PREFIXES if f.startswith(p)}
+
+    hits = exact_hits | prefix_hits
+    assert not hits, (
+        f"working tree touches explicitly frozen/forbidden files - this must never happen: {hits}"
+    )

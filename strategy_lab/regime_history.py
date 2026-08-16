@@ -9,7 +9,7 @@ operations, so each date in the 5-year sample can be tagged with the regime
 that was in effect at the time - still using only trailing information
 available as of that date (rolling SMA/vol/drawdown), so no look-ahead.
 """
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -61,6 +61,22 @@ def compute_historical_regime_series(conn, config: RegimeConfig = DEFAULT_REGIME
     return out.dropna(subset=["sma_long"]).reset_index(drop=True)
 
 
+def _select_as_of_row(regime_series: pd.DataFrame, as_of_date: Optional[str] = None) -> Optional[pd.Series]:
+    """Extracted, not new, selection logic - identical to regime_label_as_of's
+    existing body. Returns the selected row (Series with 'date'/'label'
+    among its fields) or None under the exact same conditions
+    regime_label_as_of already documents (empty series; as_of_date before
+    every row)."""
+    if regime_series.empty:
+        return None
+    if as_of_date is None:
+        return regime_series.iloc[-1]
+    eligible = regime_series[regime_series["date"] <= as_of_date]
+    if eligible.empty:
+        return None
+    return eligible.iloc[-1]
+
+
 def regime_label_as_of(regime_series: pd.DataFrame, as_of_date: Optional[str] = None) -> Optional[str]:
     """Point-in-time regime lookup used ONLY by
     strategy_lab.prospective.build_todays_observation (never by report.py/
@@ -80,12 +96,50 @@ def regime_label_as_of(regime_series: pd.DataFrame, as_of_date: Optional[str] = 
     date > as_of_date - no look-ahead. Returns None (never fabricates a
     label) if regime_series is empty, or if every row's date is >
     as_of_date (insufficient trailing history existed as of that date -
-    a real 'no signal' outcome)."""
-    if regime_series.empty:
-        return None
-    if as_of_date is None:
-        return regime_series.iloc[-1]["label"]
-    eligible = regime_series[regime_series["date"] <= as_of_date]
-    if eligible.empty:
-        return None
-    return eligible.iloc[-1]["label"]
+    a real 'no signal' outcome).
+
+    UNCHANGED public contract (Phase 16 §1.1) - now implemented via
+    _select_as_of_row so there is exactly one selection logic, not two
+    (Phase 17 §1.2)."""
+    row = _select_as_of_row(regime_series, as_of_date)
+    return row["label"] if row is not None else None
+
+
+def regime_label_and_date_as_of(regime_series: pd.DataFrame, as_of_date: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """New companion to regime_label_as_of (Phase 17 Area B) - same
+    selection, but also returns the actual `date` of the row selected (the
+    real SPY/benchmark bar date backing this label), distinct from
+    as_of_date/observation_date. (None, None) under the exact same
+    conditions regime_label_as_of returns None. Used ONLY by
+    strategy_lab.prospective.build_todays_observation - all other existing
+    callers of regime_label_as_of (there are none besides prospective.py
+    today) are unaffected."""
+    row = _select_as_of_row(regime_series, as_of_date)
+    if row is None:
+        return None, None
+    return row["label"], row["date"]
+
+
+REGIME_FRESHNESS_FRESH = "FRESH"
+REGIME_FRESHNESS_STALE = "STALE"
+REGIME_FRESHNESS_UNAVAILABLE = "UNAVAILABLE"
+
+
+def classify_regime_freshness(observation_date: Optional[str], benchmark_data_date: Optional[str]) -> str:
+    """Pure, deterministic, no DB access.
+      UNAVAILABLE: benchmark_data_date is None (no eligible history at all
+                   as of observation_date - regime_series empty, or every
+                   row's date > observation_date).
+      FRESH:       benchmark_data_date == observation_date (the benchmark's
+                   own latest bar covers the observation's own date - the
+                   normal case once Area A's refresh succeeds).
+      STALE:       benchmark_data_date is not None and < observation_date
+                   (a real, known label exists but it lags - whether
+                   because the fetch failed, Alpaca hasn't posted the bar
+                   yet, or this ticker's observation_date is itself in the
+                   past relative to when this function is called)."""
+    if benchmark_data_date is None:
+        return REGIME_FRESHNESS_UNAVAILABLE
+    if observation_date is not None and benchmark_data_date == observation_date:
+        return REGIME_FRESHNESS_FRESH
+    return REGIME_FRESHNESS_STALE

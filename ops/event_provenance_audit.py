@@ -22,8 +22,12 @@ Open Question #2 in docs/specs/phase16.md §9 rather than built here.
 from strategy_lab.prospective_events import (
     ALL_EVENT_TYPES,
     EVENT_CONTROL_ENTRY,
+    EVENT_CONTROL_EXIT,
     EVENT_EXPERIMENT_A_ENTRY,
+    EVENT_EXPERIMENT_A_EXIT,
     EVENT_EXPERIMENT_B_ENTRY,
+    EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS,
+    EVENT_EXPERIMENT_B_EXIT_TECHNICAL,
     load_events,
 )
 
@@ -40,33 +44,42 @@ EVENT_TYPE_TO_VARIANT = {
     EVENT_EXPERIMENT_B_ENTRY: "EXPERIMENT_B",
 }
 
+# Phase 17 §3.3: exit-side counterpart, kept SEPARATE from
+# EVENT_TYPE_TO_VARIANT (entry-only) - never merged into it, to avoid
+# collapsing EVENT_EXPERIMENT_B_EXIT_TECHNICAL/
+# EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS into one undifferentiated
+# "EXPERIMENT_B" count, which would erase exactly the information this
+# phase exists to surface.
+EXIT_EVENT_TYPE_TO_VARIANT = {
+    EVENT_CONTROL_EXIT: "CONTROL",
+    EVENT_EXPERIMENT_A_EXIT: "EXPERIMENT_A",
+    EVENT_EXPERIMENT_B_EXIT_TECHNICAL: "EXPERIMENT_B",
+    EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS: "EXPERIMENT_B",
+}
+
 
 def compute_event_type_breakdown(conn) -> dict:
-    """{'entry_attributable': {event_type: count}, 'shared_signal_detection':
-    {event_type: count}, 'total_events': n}. 'shared_signal_detection' =
-    the 4 event types NOT in EVENT_TYPE_TO_VARIANT
-    (score_crossing_70/trend_advance/momentum_advance/volume_advance) -
-    reported as 'not variant-specific by design', never as a gap."""
+    """{'entry_attributable': {...} (unchanged, 3 entry types),
+    'exit_attributable': {...} (NEW, 4 exit types), 'shared_signal_detection':
+    {...} (unchanged membership: the 4 non-variant-specific types),
+    'total_events': n}."""
     events = load_events(conn)
+    counts = events["event_type"].value_counts().to_dict() if not events.empty else {}
     entry_attributable: dict = {}
+    exit_attributable: dict = {}
     shared_signal_detection: dict = {}
-    if not events.empty:
-        counts = events["event_type"].value_counts().to_dict()
-        for event_type in ALL_EVENT_TYPES:
-            count = int(counts.get(event_type, 0))
-            if event_type in EVENT_TYPE_TO_VARIANT:
-                entry_attributable[event_type] = count
-            else:
-                shared_signal_detection[event_type] = count
-    else:
-        for event_type in ALL_EVENT_TYPES:
-            if event_type in EVENT_TYPE_TO_VARIANT:
-                entry_attributable[event_type] = 0
-            else:
-                shared_signal_detection[event_type] = 0
+    for event_type in ALL_EVENT_TYPES:
+        count = int(counts.get(event_type, 0))
+        if event_type in EVENT_TYPE_TO_VARIANT:
+            entry_attributable[event_type] = count
+        elif event_type in EXIT_EVENT_TYPE_TO_VARIANT:
+            exit_attributable[event_type] = count
+        else:
+            shared_signal_detection[event_type] = count
 
     return {
         "entry_attributable": entry_attributable,
+        "exit_attributable": exit_attributable,
         "shared_signal_detection": shared_signal_detection,
         "total_events": int(len(events)),
     }
@@ -98,6 +111,44 @@ def compute_event_provenance_coverage(conn) -> dict:
         "events_with_fingerprint": events_with_fingerprint,
         "events_unknown_legacy": events_unknown_legacy,
         "by_variant": by_variant,
+    }
+
+
+def compute_exit_event_type_provenance(conn) -> dict:
+    """{'by_event_type': {event_type: count for each of the 4 exit types,
+    always present, 0-filled}, 'events_with_fingerprint',
+    'events_unknown_legacy', 'total_exit_events'}. Counted PER EVENT TYPE
+    (not per variant) deliberately - EVENT_EXPERIMENT_B_EXIT_TECHNICAL and
+    EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS both map to variant 'EXPERIMENT_B'
+    but must stay independently visible."""
+    events = load_events(conn)
+    by_event_type = {event_type: 0 for event_type in EXIT_EVENT_TYPE_TO_VARIANT}
+
+    if events.empty:
+        return {
+            "by_event_type": by_event_type,
+            "events_with_fingerprint": 0,
+            "events_unknown_legacy": 0,
+            "total_exit_events": 0,
+        }
+
+    exit_events = events[events["event_type"].isin(EXIT_EVENT_TYPE_TO_VARIANT.keys())]
+    for event_type in EXIT_EVENT_TYPE_TO_VARIANT:
+        by_event_type[event_type] = int((exit_events["event_type"] == event_type).sum())
+
+    if exit_events.empty:
+        events_with_fingerprint = 0
+        events_unknown_legacy = 0
+    else:
+        fingerprint_labels = exit_events["config_fingerprint"].apply(label_provenance_value)
+        events_unknown_legacy = int((fingerprint_labels == PROVENANCE_UNKNOWN_LEGACY).sum())
+        events_with_fingerprint = int(len(exit_events) - events_unknown_legacy)
+
+    return {
+        "by_event_type": by_event_type,
+        "events_with_fingerprint": events_with_fingerprint,
+        "events_unknown_legacy": events_unknown_legacy,
+        "total_exit_events": int(len(exit_events)),
     }
 
 
@@ -143,15 +194,29 @@ ENTRY_AB_COOCCURRENCE_NOTE = (
     "exit (strategy_lab/phase10_experiments.py). This is not an anomaly."
 )
 
+# Phase 17 §3.3: exit-side counterpart to ENTRY_AB_COOCCURRENCE_NOTE.
+EXPERIMENT_B_EXIT_COOCCURRENCE_NOTE = (
+    "When both EVENT_EXPERIMENT_B_EXIT_TECHNICAL and "
+    "EVENT_EXPERIMENT_B_EXIT_REGIME_LOSS newly transition true on the same "
+    "(ticker, observation_date), BOTH events are recorded independently - "
+    "never merged or prioritized. This mirrors the existing "
+    "EVENT_EXPERIMENT_A_ENTRY/EVENT_EXPERIMENT_B_ENTRY co-occurrence "
+    "convention (docs/specs/phase16.md §0.2) of allowing multiple "
+    "independently-true event types to co-occur on the same day."
+)
+
 
 def event_provenance_audit_summary(conn) -> dict:
     """Rollup: {'event_type_breakdown', 'event_provenance_coverage',
     'exit_attribution_gap', 'entry_ab_cooccurrence_note': a fixed string
     documenting that EVENT_EXPERIMENT_A_ENTRY/EVENT_EXPERIMENT_B_ENTRY
-    always co-occur by construction (§0.2), not an anomaly}."""
+    always co-occur by construction (§0.2), not an anomaly,
+    'exit_event_provenance', 'experiment_b_exit_cooccurrence_note'}."""
     return {
         "event_type_breakdown": compute_event_type_breakdown(conn),
         "event_provenance_coverage": compute_event_provenance_coverage(conn),
         "exit_attribution_gap": compute_exit_attribution_gap_note(),
         "entry_ab_cooccurrence_note": ENTRY_AB_COOCCURRENCE_NOTE,
+        "exit_event_provenance": compute_exit_event_type_provenance(conn),
+        "experiment_b_exit_cooccurrence_note": EXPERIMENT_B_EXIT_COOCCURRENCE_NOTE,
     }
