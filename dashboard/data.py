@@ -24,7 +24,7 @@ from backtest.config import DEFAULT_EXECUTION, DEFAULT_RULES, DEFAULT_WF_CONFIG
 from backtest.runner import BacktestResult, run_backtest
 from backtest.walkforward import WalkForwardResult, run_walk_forward
 from config.settings import WATCHLIST
-from alerts.price_config import PriceThreshold
+from alerts.price_config import MODE_FIXED, PriceThreshold
 from db.alert_repository import load_alert_history
 from db.database import db_session
 from db.price_alert_config_repository import (
@@ -301,13 +301,24 @@ def add_or_update_price_alert_threshold(
     ticker: str,
     above: Optional[float] = None,
     below: Optional[float] = None,
+    mode: str = MODE_FIXED,
+    percent: Optional[float] = None,
+    baseline_price: Optional[float] = None,
 ) -> None:
     """Explicit, user-triggered write from dashboard/views/
     price_alert_config.py's add/edit form - never called on page load. Adds
     a new ticker's threshold or overwrites an existing one's
-    (single-row-per-ticker, so add and edit are the same operation)."""
+    (single-row-per-ticker, so add and edit are the same operation).
+
+    mode=MODE_FIXED (default): above/below are the literal dollar levels.
+    mode=MODE_PERCENT: percent + baseline_price are resolved into concrete
+    above/below by db.price_alert_config_repository.upsert_price_alert_config
+    itself - see that function's docstring."""
     with db_session() as conn:
-        upsert_price_alert_config(conn, ticker=ticker, above=above, below=below)
+        upsert_price_alert_config(
+            conn, ticker=ticker, above=above, below=below,
+            mode=mode, percent=percent, baseline_price=baseline_price,
+        )
     get_price_alert_thresholds.clear()
 
 

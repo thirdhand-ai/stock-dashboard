@@ -62,7 +62,10 @@ CREATE_PRICE_ALERT_CONFIG_TABLE = """
 CREATE TABLE IF NOT EXISTS price_alert_config (
     ticker TEXT PRIMARY KEY,
     above REAL,
-    below REAL
+    below REAL,
+    mode TEXT NOT NULL DEFAULT 'fixed',
+    percent REAL,
+    baseline_price REAL
 );
 """
 
@@ -83,6 +86,23 @@ def _migrate_add_discord_columns_to_price_alerts(conn):
         conn.commit()
 
 
+def _migrate_add_percent_mode_columns_to_price_alert_config(conn):
+    """Additive: price_alert_config gets mode/percent/baseline_price so a
+    ticker can be configured with a percentage band instead of fixed
+    above/below dollar values (see alerts/price_config.py's
+    resolve_percent_band). A pre-existing DB's `CREATE TABLE IF NOT EXISTS`
+    won't add columns to an already-created table. mode's NOT NULL DEFAULT
+    'fixed' back-fills every pre-existing row as fixed-dollar mode
+    automatically - their above/below values are untouched, so existing
+    thresholds keep evaluating exactly as before."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(price_alert_config)").fetchall()}
+    if "mode" not in cols:
+        conn.execute("ALTER TABLE price_alert_config ADD COLUMN mode TEXT NOT NULL DEFAULT 'fixed'")
+        conn.execute("ALTER TABLE price_alert_config ADD COLUMN percent REAL")
+        conn.execute("ALTER TABLE price_alert_config ADD COLUMN baseline_price REAL")
+        conn.commit()
+
+
 def ensure_price_alerts_schema(conn) -> None:
     """Create price_alerts/price_alert_state/price_alert_config if they
     don't exist yet, and apply any additive migration for a pre-existing
@@ -95,3 +115,4 @@ def ensure_price_alerts_schema(conn) -> None:
     conn.execute(CREATE_PRICE_ALERT_CONFIG_TABLE)
     conn.commit()
     _migrate_add_discord_columns_to_price_alerts(conn)
+    _migrate_add_percent_mode_columns_to_price_alert_config(conn)

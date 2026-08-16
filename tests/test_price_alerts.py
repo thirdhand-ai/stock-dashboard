@@ -22,7 +22,7 @@ import pytest
 
 from alerts.discord import build_price_alert_discord_payload, send_discord_alert
 from alerts.email import send_email_alert
-from alerts.price_config import PriceAlertConfig, PriceThreshold
+from alerts.price_config import MODE_PERCENT, PriceAlertConfig, PriceThreshold, resolve_percent_band
 from alerts.price_engine import (
     REASON_PRICE_ABOVE,
     REASON_PRICE_BELOW,
@@ -122,6 +122,84 @@ def test_crossing_again_after_falling_below_can_trigger_new_alert():
     assert REASON_PRICE_ABOVE not in step1
     step2 = determine_price_alert_reasons(190.0, 205.0, threshold)  # crosses back up
     assert REASON_PRICE_ABOVE in step2
+
+
+# --- determine_price_alert_reasons: percentage-band thresholds ---
+#
+# Percent mode resolves to the exact same above/below shape fixed mode uses
+# (see alerts/price_config.py's resolve_percent_band) - these tests prove
+# the crossing logic itself needs no percent-specific branch: a percent-mode
+# PriceThreshold (mode=MODE_PERCENT, above/below pre-resolved from
+# baseline+percent) is evaluated by the identical determine_price_alert_reasons
+# used above for fixed thresholds.
+
+
+def _percent_threshold(ticker, baseline_price, percent):
+    above, below = resolve_percent_band(baseline_price, percent)
+    return PriceThreshold(ticker=ticker, above=above, below=below, mode=MODE_PERCENT, percent=percent, baseline_price=baseline_price)
+
+
+def test_percent_band_crossing_above_upper_edge_triggers():
+    # baseline=150, +/-6% -> above=159, below=141
+    threshold = _percent_threshold("AAA", baseline_price=150.0, percent=6.0)
+    reasons = determine_price_alert_reasons(previous_price=155.0, current_price=160.0, threshold=threshold)
+    assert reasons == [REASON_PRICE_ABOVE]
+
+
+def test_percent_band_crossing_below_lower_edge_triggers():
+    threshold = _percent_threshold("AAA", baseline_price=150.0, percent=6.0)
+    reasons = determine_price_alert_reasons(previous_price=145.0, current_price=140.0, threshold=threshold)
+    assert reasons == [REASON_PRICE_BELOW]
+
+
+def test_percent_band_staying_inside_band_never_triggers():
+    threshold = _percent_threshold("AAA", baseline_price=150.0, percent=6.0)
+    reasons = determine_price_alert_reasons(previous_price=148.0, current_price=152.0, threshold=threshold)
+    assert reasons == []
+
+
+def test_percent_band_remaining_beyond_edge_does_not_retrigger():
+    threshold = _percent_threshold("AAA", baseline_price=150.0, percent=6.0)
+    reasons = determine_price_alert_reasons(previous_price=161.0, current_price=165.0, threshold=threshold)
+    assert reasons == []
+
+
+def test_percent_band_first_observation_never_alerts():
+    threshold = _percent_threshold("AAA", baseline_price=150.0, percent=6.0)
+    assert determine_price_alert_reasons(None, 200.0, threshold) == []
+
+
+def test_percent_band_narrower_percent_produces_tighter_crossing_points():
+    """A 1% band around the same baseline should trigger on a move that a 6%
+    band would not - proving the resolved above/below actually scale with
+    the configured percent, not a fixed offset."""
+    wide = _percent_threshold("AAA", baseline_price=150.0, percent=6.0)   # above=159
+    narrow = _percent_threshold("AAA", baseline_price=150.0, percent=1.0)  # above=151.5
+
+    reasons_wide = determine_price_alert_reasons(previous_price=150.0, current_price=152.0, threshold=wide)
+    reasons_narrow = determine_price_alert_reasons(previous_price=150.0, current_price=152.0, threshold=narrow)
+
+    assert reasons_wide == []              # 152 doesn't clear the wide band's 159 edge
+    assert reasons_narrow == [REASON_PRICE_ABOVE]  # but does clear the narrow band's 151.5 edge
+
+
+def test_evaluate_ticker_price_percent_mode_end_to_end():
+    """Full pipeline: a percent-mode threshold stored via the repository
+    (baseline=150, +/-6%), evaluated against a real close price, fires
+    exactly like an equivalent fixed threshold would."""
+    conn = make_test_db()
+    insert_placeholder_price_row(conn, "PPP")
+    upsert_price_alert_config(conn, "PPP", mode=MODE_PERCENT, percent=6.0, baseline_price=150.0)
+    upsert_price_alert_state(conn, "PPP", price=155.0, alerted=False)
+
+    from db.price_alert_config_repository import get_price_alert_config
+    threshold = get_price_alert_config(conn, "PPP")
+    assert threshold.above == pytest.approx(159.0)
+
+    ev = evaluate_at_price(conn, "PPP", threshold, close=160.0)
+
+    assert ev.should_alert is True
+    assert ev.reasons == [REASON_PRICE_ABOVE]
 
 
 # --- evaluate_ticker_price / run_price_alert_cycle: DB integration ---
