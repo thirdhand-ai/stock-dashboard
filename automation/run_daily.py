@@ -182,13 +182,21 @@ def main():
     print_summary(result)
 
     if result.status in (STATUS_FAILED, STATUS_PARTIAL_FAILURE):
-        # Disabled by default (see alerts/ops_notifications.py) - this call
-        # is a documented no-op until OPERATIONAL_ALERTS_ENABLED is
-        # explicitly flipped on after separate approval.
+        # Enabled as of 2026-08-16 (see alerts/ops_notifications.py's
+        # docstring) - delivers over email + Discord independently, at most
+        # once per trading_date.
         from alerts.ops_notifications import send_operational_failure_notification
         failure_summary = "; ".join(f"{o.ticker}: {o.ingest_error}" for o in result.outcomes if not o.ingest_ok)
         with db_session() as conn:
-            send_operational_failure_notification(conn, trading_date=date.today(), error_summary=failure_summary)
+            notification_result = send_operational_failure_notification(conn, trading_date=date.today(), error_summary=failure_summary)
+        logger.info(
+            "operational failure notification: sent=%s reason=%s email_sent=%s email_error=%s discord_sent=%s discord_error=%s",
+            notification_result.sent, notification_result.reason,
+            notification_result.email_sent, notification_result.email_error,
+            notification_result.discord_sent, notification_result.discord_error,
+        )
+        print(f"Operational failure notification: {notification_result.reason} "
+              f"(email_sent={notification_result.email_sent}, discord_sent={notification_result.discord_sent})")
 
     if result.status in (STATUS_SUCCESS, STATUS_SKIPPED_NON_TRADING_DAY):
         sys.exit(EXIT_SUCCESS)

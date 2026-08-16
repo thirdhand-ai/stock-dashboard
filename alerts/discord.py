@@ -2,7 +2,7 @@
 types, each with its own payload builder: build_discord_payload (score/
 stage alerts, alerts/runner.py) and build_price_alert_discord_payload
 (price-threshold alerts, alerts/price_runner.py) - send_discord_alert
-itself is generic and used by both.
+itself is generic and used by both, plus alerts/ops_notifications.py.
 
 DISCORD_WEBHOOK_URL is read once from config.settings (which loads it from
 the environment via python-dotenv - see config/settings.py). It is never

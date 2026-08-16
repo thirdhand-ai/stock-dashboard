@@ -382,12 +382,15 @@ def test_send_test_notification_persists_under_distinct_test_type():
     assert row["dry_run"] == 0
 
 
-# --- operational failure notification (A11): disabled by default ---
+# --- operational failure notification (A11): enabled 2026-08-16, dual-channel ---
 
 
-def test_operational_alerts_disabled_by_default():
+def test_operational_alerts_enabled():
+    """Flipped on 2026-08-16 after review, closing the gap exposed by the
+    2026-08-12 total-ingestion-failure incident (logged but never paged -
+    see logs/automation.log)."""
     from alerts.ops_notifications import OPERATIONAL_ALERTS_ENABLED
-    assert OPERATIONAL_ALERTS_ENABLED is False
+    assert OPERATIONAL_ALERTS_ENABLED is True
 
 
 def test_operational_notification_is_noop_when_disabled():
@@ -395,29 +398,114 @@ def test_operational_notification_is_noop_when_disabled():
     from datetime import date
 
     conn = make_test_db()
-    with patch("alerts.ops_notifications.requests.post") as mock_post:
+    with patch("alerts.ops_notifications.requests.post") as mock_post, \
+         patch("alerts.email.smtplib.SMTP") as mock_smtp:
         result = send_operational_failure_notification(
             conn, trading_date=date(2026, 8, 12), error_summary="DNS failure", enabled=False,
         )
 
     mock_post.assert_not_called()
+    mock_smtp.assert_not_called()
     assert result.sent is False
 
 
 def test_operational_notification_sends_when_explicitly_enabled():
+    """Discord succeeds; email fails safe (unconfigured in this test) -
+    overall `sent` is True because at least one channel delivered."""
     from alerts.ops_notifications import send_operational_failure_notification
     from datetime import date
 
     conn = make_test_db()
     fake_response = Mock(status_code=204)
     with patch("alerts.ops_notifications.requests.post", return_value=fake_response) as mock_post, \
-         patch("alerts.ops_notifications.DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/fake/test"):
+         patch("alerts.ops_notifications.DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/fake/test"), \
+         patch("alerts.email.SMTP_HOST", None):
         result = send_operational_failure_notification(
             conn, trading_date=date(2026, 8, 12), error_summary="DNS failure", enabled=True,
         )
 
     mock_post.assert_called_once()
     assert result.sent is True
+    assert result.discord_sent is True
+    assert result.email_sent is False
+
+
+def test_operational_notification_sends_email_and_discord_independently():
+    from alerts.ops_notifications import send_operational_failure_notification
+    from datetime import date
+
+    conn = make_test_db()
+    mock_server = Mock()
+    mock_smtp_cm = Mock()
+    mock_smtp_cm.__enter__ = Mock(return_value=mock_server)
+    mock_smtp_cm.__exit__ = Mock(return_value=False)
+    fake_discord_response = Mock(status_code=204)
+    with patch("alerts.ops_notifications.requests.post", return_value=fake_discord_response) as mock_post, \
+         patch("alerts.ops_notifications.DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/fake/test"), \
+         patch("alerts.email.smtplib.SMTP", return_value=mock_smtp_cm), \
+         patch("alerts.email.SMTP_HOST", "smtp.example.com"), \
+         patch("alerts.email.SMTP_USERNAME", "user@example.com"), \
+         patch("alerts.email.SMTP_PASSWORD", "app-password"), \
+         patch("alerts.email.ALERT_EMAIL_FROM", "user@example.com"), \
+         patch("alerts.email.ALERT_EMAIL_TO", "me@example.com"):
+        result = send_operational_failure_notification(
+            conn, trading_date=date(2026, 8, 12), error_summary="DNS failure", enabled=True,
+        )
+
+    mock_post.assert_called_once()
+    mock_server.send_message.assert_called_once()
+    assert result.sent is True
+    assert result.email_sent is True
+    assert result.discord_sent is True
+
+
+def test_operational_notification_survives_when_only_email_configured():
+    """Discord unconfigured; email succeeds - one working channel is
+    enough, same "independent channels" contract as the stock alerts."""
+    from alerts.ops_notifications import send_operational_failure_notification
+    from datetime import date
+
+    conn = make_test_db()
+    mock_server = Mock()
+    mock_smtp_cm = Mock()
+    mock_smtp_cm.__enter__ = Mock(return_value=mock_server)
+    mock_smtp_cm.__exit__ = Mock(return_value=False)
+    with patch("alerts.ops_notifications.requests.post") as mock_post, \
+         patch("alerts.ops_notifications.DISCORD_WEBHOOK_URL", None), \
+         patch("alerts.email.smtplib.SMTP", return_value=mock_smtp_cm), \
+         patch("alerts.email.SMTP_HOST", "smtp.example.com"), \
+         patch("alerts.email.SMTP_USERNAME", "user@example.com"), \
+         patch("alerts.email.SMTP_PASSWORD", "app-password"), \
+         patch("alerts.email.ALERT_EMAIL_FROM", "user@example.com"), \
+         patch("alerts.email.ALERT_EMAIL_TO", "me@example.com"):
+        result = send_operational_failure_notification(
+            conn, trading_date=date(2026, 8, 12), error_summary="DNS failure", enabled=True,
+        )
+
+    mock_post.assert_not_called()
+    assert result.sent is True
+    assert result.email_sent is True
+    assert result.discord_sent is False
+    assert result.discord_error is not None
+
+
+def test_operational_notification_records_attempt_even_if_both_channels_fail():
+    """Neither channel configured: overall `sent` is False, but the
+    trading_date is still recorded as attempted - a day that can't reach
+    anyone must not be retried in an infinite loop by later failed runs."""
+    from alerts.ops_notifications import send_operational_failure_notification
+    from datetime import date
+
+    conn = make_test_db()
+    with patch("alerts.ops_notifications.DISCORD_WEBHOOK_URL", None), \
+         patch("alerts.email.SMTP_HOST", None):
+        first = send_operational_failure_notification(conn, trading_date=date(2026, 8, 12), error_summary="DNS failure", enabled=True)
+        second = send_operational_failure_notification(conn, trading_date=date(2026, 8, 12), error_summary="DNS failure again", enabled=True)
+
+    assert first.sent is False
+    assert "both channels" in first.reason
+    assert second.sent is False
+    assert "already sent" in second.reason
 
 
 def test_operational_notification_at_most_once_per_day():
@@ -427,7 +515,8 @@ def test_operational_notification_at_most_once_per_day():
     conn = make_test_db()
     fake_response = Mock(status_code=204)
     with patch("alerts.ops_notifications.requests.post", return_value=fake_response) as mock_post, \
-         patch("alerts.ops_notifications.DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/fake/test"):
+         patch("alerts.ops_notifications.DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/fake/test"), \
+         patch("alerts.email.SMTP_HOST", None):
         first = send_operational_failure_notification(conn, trading_date=date(2026, 8, 12), error_summary="DNS failure", enabled=True)
         second = send_operational_failure_notification(conn, trading_date=date(2026, 8, 12), error_summary="DNS failure again", enabled=True)
 
@@ -450,6 +539,16 @@ def test_operational_notification_payload_has_no_stock_content():
     from alerts.ops_notifications import build_operational_failure_payload
     payload = build_operational_failure_payload("ingestion failed for all tickers")
     text = str(payload)
+    for ticker in ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META"):
+        assert ticker not in text
+    assert "score" not in text.lower()
+    assert "stage" not in text.lower()
+
+
+def test_operational_failure_email_has_no_stock_content():
+    from alerts.ops_notifications import build_operational_failure_email_message
+    message = build_operational_failure_email_message("ingestion failed for all tickers")
+    text = str(message)
     for ticker in ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META"):
         assert ticker not in text
     assert "score" not in text.lower()

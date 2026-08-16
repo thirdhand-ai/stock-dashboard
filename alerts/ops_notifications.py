@@ -1,34 +1,43 @@
-"""Optional operational-failure Discord notification - structurally
-SEPARATE from stock-signal alerts (see alerts/discord.py, alerts/engine.py).
+"""Operational-failure notification, delivered over the same two
+independent channels (email + Discord) every other alert type in this
+codebase uses - structurally SEPARATE from stock-signal alerts (see
+alerts/discord.py, alerts/email.py, alerts/engine.py).
 
 This module never contains stock recommendation content, never reads
-scores/stages/prices, and is disabled by default: OPERATIONAL_ALERTS_ENABLED
-must be explicitly flipped to True (a deliberate code change, not an env
-var an operator could set by accident) before send_operational_failure_notification()
-will ever perform a real network call. Until that happens this is inert -
-prepared for future use per the 2026-08-12 incident review, not activated.
+scores/stages/prices. OPERATIONAL_ALERTS_ENABLED must be explicitly flipped
+to True (a deliberate code change, not an env var an operator could set by
+accident) before send_operational_failure_notification() will ever perform
+a real network call - flipped on 2026-08-16 after review, closing the gap
+exposed by the 2026-08-12 total-ingestion-failure incident (see
+logs/automation.log for that day's run): the pipeline correctly logged and
+recorded the failure, but nothing paged anyone, so it went unnoticed until
+the next manual check.
 
 At most one notification per failed scheduled run/day: the caller is
 expected to pass the trading date, and already_sent_today() records/checks
 that in operational_notifications so a flaky day generating several failed
-runs still only pages once.
+runs still only pages once. Email and Discord are each attempted
+independently - one channel being unconfigured or failing never blocks the
+other, same contract alerts/price_runner.py and alerts/volatility_runner.py
+use for stock alerts.
 """
 import logging
 import re
 from dataclasses import dataclass
 from datetime import date
+from email.message import EmailMessage
 from typing import Optional
 
 import requests
 
-from config.settings import DISCORD_WEBHOOK_URL
+from alerts.email import send_email_alert
+from config.settings import ALERT_EMAIL_FROM, ALERT_EMAIL_TO, DISCORD_WEBHOOK_URL
 
 logger = logging.getLogger(__name__)
 
-# Deliberately hardcoded off. Flipping this requires an explicit code
-# change and review - not something a config file or env var flips
-# silently. Do not wire a scheduler/cron to assume this is on.
-OPERATIONAL_ALERTS_ENABLED = False
+# Flipping this requires an explicit code change and review - not something
+# a config file or env var flips silently.
+OPERATIONAL_ALERTS_ENABLED = True
 
 OPERATIONAL_FAILURE_HEADLINE = "Stock dashboard automation failed — market data could not be refreshed."
 
@@ -65,18 +74,40 @@ def build_operational_failure_payload(error_summary: str) -> dict:
     }
 
 
+def build_operational_failure_email_message(error_summary: str) -> EmailMessage:
+    """Build the email for an operational-failure notification. Pure
+    function, no network call - same content/footer convention as
+    build_operational_failure_payload above, just as plain text instead of
+    a Discord embed."""
+    sanitized = sanitize_error_summary(error_summary)
+    message = EmailMessage()
+    message["Subject"] = "Stock Dashboard - Automation Failure"
+    message["From"] = ALERT_EMAIL_FROM
+    message["To"] = ALERT_EMAIL_TO
+    message.set_content(
+        f"{OPERATIONAL_FAILURE_HEADLINE}\n\nSummary: {sanitized}\n\n"
+        "Operational status only - not a stock signal, not a trade recommendation."
+    )
+    return message
+
+
 @dataclass
 class OperationalNotificationResult:
-    sent: bool
+    sent: bool                          # True if at least one channel delivered
     reason: str
+    email_sent: bool = False
+    email_error: Optional[str] = None
+    discord_sent: bool = False
+    discord_error: Optional[str] = None
 
 
 def send_operational_failure_notification(
     conn, trading_date: date, error_summary: str, enabled: bool = OPERATIONAL_ALERTS_ENABLED,
 ) -> OperationalNotificationResult:
-    """Send at most one operational-failure notification per trading_date.
-    No-op (and no network call at all) unless BOTH `enabled` is explicitly
-    True and DISCORD_WEBHOOK_URL is configured."""
+    """Send at most one operational-failure notification per trading_date,
+    attempting both email and Discord independently - one channel being
+    unconfigured or failing never blocks the other. No-op (and no network
+    call at all) unless `enabled` is explicitly True."""
     if not enabled:
         return OperationalNotificationResult(sent=False, reason="operational alerts disabled")
 
@@ -85,16 +116,32 @@ def send_operational_failure_notification(
     if already_sent_today(conn, trading_date):
         return OperationalNotificationResult(sent=False, reason="already sent once today")
 
-    if not DISCORD_WEBHOOK_URL:
-        return OperationalNotificationResult(sent=False, reason="DISCORD_WEBHOOK_URL not configured")
+    email_message = build_operational_failure_email_message(error_summary)
+    email_result = send_email_alert(email_message)
+    email_sent = email_result.ok
+    email_error = email_result.error
 
-    payload = build_operational_failure_payload(error_summary)
-    try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10.0)
-        ok = 200 <= response.status_code < 300
-    except requests.RequestException as e:
-        logger.error("operational notification delivery failed: %s", type(e).__name__)
-        ok = False
+    discord_sent = False
+    discord_error = None
+    if not DISCORD_WEBHOOK_URL:
+        discord_error = "DISCORD_WEBHOOK_URL not configured"
+    else:
+        payload = build_operational_failure_payload(error_summary)
+        try:
+            response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10.0)
+            discord_sent = 200 <= response.status_code < 300
+            if not discord_sent:
+                discord_error = f"Discord returned HTTP {response.status_code}"
+        except requests.RequestException as e:
+            logger.error("operational notification Discord delivery failed: %s", type(e).__name__)
+            discord_error = type(e).__name__
 
     record_sent(conn, trading_date, sanitize_error_summary(error_summary))
-    return OperationalNotificationResult(sent=ok, reason="delivered" if ok else "delivery failed")
+
+    sent = email_sent or discord_sent
+    reason = "delivered" if sent else "delivery failed on both channels"
+    return OperationalNotificationResult(
+        sent=sent, reason=reason,
+        email_sent=email_sent, email_error=email_error,
+        discord_sent=discord_sent, discord_error=discord_error,
+    )
