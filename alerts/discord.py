@@ -1,4 +1,8 @@
-"""Discord webhook delivery.
+"""Discord webhook delivery. Shared channel for two independent alert
+types, each with its own payload builder: build_discord_payload (score/
+stage alerts, alerts/runner.py) and build_price_alert_discord_payload
+(price-threshold alerts, alerts/price_runner.py) - send_discord_alert
+itself is generic and used by both.
 
 DISCORD_WEBHOOK_URL is read once from config.settings (which loads it from
 the environment via python-dotenv - see config/settings.py). It is never
@@ -21,6 +25,11 @@ REASON_LABELS = {
     "stage_advance": "Confirmation stage advanced",
 }
 ALERT_COLOR = 0x3987E5  # matches the dashboard's primary categorical slot
+
+PRICE_REASON_LABELS = {
+    "price_above": "crossed above",
+    "price_below": "crossed below",
+}
 
 
 @dataclass
@@ -60,6 +69,44 @@ def build_discord_payload(evaluation) -> dict:
                 "description": reasons_text,
                 "color": ALERT_COLOR,
                 "fields": fields,
+                "footer": {
+                    "text": "Signal-monitoring alert only — not an executed trade, not financial advice."
+                },
+            }
+        ]
+    }
+
+
+def build_price_alert_discord_payload(evaluation) -> dict:
+    """Build the Discord webhook JSON payload for one triggered
+    PriceAlertEvaluation (alerts/price_engine.py). Same message content as
+    alerts/email.py::build_email_message - same subject/body facts, same
+    "not financial advice" footer - just laid out as a Discord embed
+    instead of an email. Pure function, no network call - reused by both a
+    real send and by dry-run reporting so what you preview is what would be
+    sent, same convention as build_discord_payload above."""
+    reason = evaluation.reasons[0] if evaluation.reasons else ""
+    direction = PRICE_REASON_LABELS.get(reason, reason)
+    threshold_value = evaluation.threshold.above if reason == "price_above" else evaluation.threshold.below
+    prev_price_text = f" (was ${evaluation.previous_price:,.2f})" if evaluation.previous_price is not None else ""
+
+    return {
+        "embeds": [
+            {
+                "title": f"{evaluation.ticker} {direction} ${threshold_value:,.2f}",
+                "description": (
+                    f"{evaluation.ticker} {direction} your configured threshold of "
+                    f"${threshold_value:,.2f}."
+                ),
+                "color": ALERT_COLOR,
+                "fields": [
+                    {
+                        "name": "Current price",
+                        "value": f"${evaluation.current_price:,.2f}{prev_price_text}",
+                        "inline": True,
+                    },
+                    {"name": "As of", "value": f"{evaluation.data_date} ({evaluation.source})", "inline": True},
+                ],
                 "footer": {
                     "text": "Signal-monitoring alert only — not an executed trade, not financial advice."
                 },

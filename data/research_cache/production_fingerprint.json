@@ -1,10 +1,10 @@
 {
-  "computed_at": "2026-08-12T22:15:09.039441+00:00",
+  "computed_at": "2026-08-16T19:03:29.084850+00:00",
   "file_hashes": {
     "signals/config.py": "793249abd2dec9106b2185bdb65a3bbf8838e1b9c88a3a85ece5593493a0545a",
     "backtest/config.py": "b15c21cdfb962da73e1afee9dbe03909a203a9af35530ba1bd205d513f9dd692",
     "trading/config.py": "d73e5e607364d3e9ab1ab097cdb0af9169f184727bb2a5e2ea138b8113707d08",
-    "config/settings.py": "00e11c60265f01281dd0812748a58d83210e2509df0b316aebc75d07f7060af3",
+    "config/settings.py": "2a9ac954da94327b9266d59dfbfa6d30d305de3dd838ba19892677040eaa0a66",
     "alerts/config.py": "0da8ad9c28981b5c62e03e04adde838c1e2929388a72b4e04548926a92dec4c7",
     "deploy/com.stockdashboard.dailyrun.plist.example": "6e9b98a3438ffa91f63734c40d32509ef29aa0bea6e2505c77b527696e8c3fee"
   },

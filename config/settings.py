@@ -14,6 +14,14 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
+# --- Email (price-threshold alerts) ---
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+ALERT_EMAIL_FROM = os.getenv("ALERT_EMAIL_FROM")
+ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO")
+
 # Alpaca must always run in paper trading mode for this project.
 ALPACA_PAPER = True
 ALPACA_BASE_URL = "https://paper-api.alpaca.markets"

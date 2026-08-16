@@ -14,11 +14,14 @@ from datetime import date
 from typing import List, Optional
 
 from alerts.config import DEFAULT_ALERT_CONFIG, AlertConfig
+from alerts.price_config import DEFAULT_PRICE_ALERT_CONFIG, PriceAlertConfig
+from alerts.price_runner import PriceAlertRunResult, run_price_alert_cycle
 from alerts.runner import AlertRunResult, run_alert_cycle
 from automation.config import DEFAULT_PIPELINE_CONFIG, PipelineConfig
 from automation.trading_calendar import is_likely_trading_day
 from config.settings import WATCHLIST
 from db.alert_repository import get_alert_state
+from db.price_alert_config_repository import list_price_alert_configs
 from db.run_history_repository import (
     SEND_MODE_DRY_RUN,
     SEND_MODE_REAL,
@@ -47,14 +50,20 @@ class TickerOutcome:
     last_known_score: Optional[float] = None
     last_known_stage: Optional[str] = None
     last_known_checked_at: Optional[str] = None
+    price_alert_result: Optional[PriceAlertRunResult] = None
+    price_evaluation_error: Optional[str] = None
 
     @property
     def failed(self) -> bool:
-        return not self.ingest_ok or self.evaluation_error is not None
+        return not self.ingest_ok or self.evaluation_error is not None or self.price_evaluation_error is not None
 
     @property
     def fired_alert(self) -> bool:
         return bool(self.alert_result and self.alert_result.fired)
+
+    @property
+    def fired_price_alert(self) -> bool:
+        return bool(self.price_alert_result and self.price_alert_result.fired)
 
 
 @dataclass
@@ -80,6 +89,10 @@ class PipelineResult:
     @property
     def alerts_generated(self) -> int:
         return sum(1 for o in self.outcomes if o.fired_alert)
+
+    @property
+    def price_alerts_generated(self) -> int:
+        return sum(1 for o in self.outcomes if o.fired_price_alert)
 
 
 def _ingest_ticker(conn, ticker: str, source: str, lookback_days: int, pipeline_config: PipelineConfig) -> TickerOutcome:
@@ -127,6 +140,25 @@ def _evaluate_ticker_alerts(conn, outcome: TickerOutcome, alert_config: AlertCon
     return outcome
 
 
+def _evaluate_ticker_price_alert(
+    conn, outcome: TickerOutcome, price_alert_config: PriceAlertConfig, send: bool, thresholds_by_ticker: dict
+) -> TickerOutcome:
+    # Same fail-closed rule as _evaluate_ticker_alerts: never evaluate (and
+    # therefore never mutate price_alert_state/cooldown/price_alerts) a
+    # ticker whose fresh ingestion for THIS run failed. A ticker with no
+    # configured PriceThreshold is simply skipped - nothing to check.
+    threshold = thresholds_by_ticker.get(outcome.ticker)
+    if not outcome.ingest_ok or threshold is None:
+        return outcome
+    try:
+        results = run_price_alert_cycle(conn, thresholds=[threshold], config=price_alert_config, send=send)
+        outcome.price_alert_result = results[0]
+    except Exception as e:
+        logger.error("price alert evaluation failed for %s: %s\n%s", outcome.ticker, e, traceback.format_exc())
+        outcome.price_evaluation_error = f"{type(e).__name__}: {e}"
+    return outcome
+
+
 def run_pipeline(
     conn,
     tickers: Optional[List[str]] = None,
@@ -134,6 +166,7 @@ def run_pipeline(
     price_source: Optional[str] = None,
     pipeline_config: PipelineConfig = DEFAULT_PIPELINE_CONFIG,
     alert_config: AlertConfig = DEFAULT_ALERT_CONFIG,
+    price_alert_config: PriceAlertConfig = DEFAULT_PRICE_ALERT_CONFIG,
     today: Optional[date] = None,
     skip_non_trading_day_check: bool = False,
 ) -> PipelineResult:
@@ -144,7 +177,14 @@ def run_pipeline(
     Keeping locking at the CLI layer makes this function trivially testable
     without touching the filesystem.
     """
-    tickers = tickers or WATCHLIST
+    thresholds_by_ticker = {t.ticker: t for t in list_price_alert_configs(conn)}
+    if tickers is None:
+        # Default run: WATCHLIST plus any ticker with a configured price
+        # alert threshold, so adding one from the dashboard keeps its price
+        # data fresh automatically without needing to also join WATCHLIST.
+        # An explicit `tickers=` argument (CLI --tickers, tests) is honored
+        # exactly as passed, no union applied.
+        tickers = WATCHLIST + sorted(t for t in thresholds_by_ticker if t not in WATCHLIST)
     source = price_source or pipeline_config.price_source
     send_mode = SEND_MODE_REAL if send else SEND_MODE_DRY_RUN
     check_date = today or date.today()
@@ -161,6 +201,7 @@ def run_pipeline(
         for ticker in tickers:
             outcome = _ingest_ticker(conn, ticker, source, pipeline_config.alpaca_lookback_days, pipeline_config)
             outcome = _evaluate_ticker_alerts(conn, outcome, alert_config, send)
+            outcome = _evaluate_ticker_price_alert(conn, outcome, price_alert_config, send, thresholds_by_ticker)
             outcomes.append(outcome)
     except Exception as e:
         # Truly unexpected top-level failure (e.g. DB connection lost
@@ -186,7 +227,7 @@ def run_pipeline(
     error_summary = None
     failures = [o for o in outcomes if o.failed]
     if failures:
-        parts = [f"{o.ticker}: {o.ingest_error or o.evaluation_error}" for o in failures]
+        parts = [f"{o.ticker}: {o.ingest_error or o.evaluation_error or o.price_evaluation_error}" for o in failures]
         error_summary = "; ".join(parts)[:2000]
 
     finish_run(

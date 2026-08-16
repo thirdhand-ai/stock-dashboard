@@ -24,8 +24,15 @@ from backtest.config import DEFAULT_EXECUTION, DEFAULT_RULES, DEFAULT_WF_CONFIG
 from backtest.runner import BacktestResult, run_backtest
 from backtest.walkforward import WalkForwardResult, run_walk_forward
 from config.settings import WATCHLIST
+from alerts.price_config import PriceThreshold
 from db.alert_repository import load_alert_history
 from db.database import db_session
+from db.price_alert_config_repository import (
+    delete_price_alert_config,
+    list_price_alert_configs,
+    upsert_price_alert_config,
+)
+from db.price_alert_repository import load_price_alert_history
 from db.price_repository import get_latest_fetched_at, load_price_history, resolve_source
 from db.run_history_repository import (
     STATUS_FAILED,
@@ -273,6 +280,43 @@ def get_backtest_report(ticker: str) -> dict:
 def get_alert_history(limit: int = 200) -> pd.DataFrame:
     with db_session() as conn:
         return load_alert_history(conn, limit=limit)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_price_alert_history(limit: int = 200) -> pd.DataFrame:
+    with db_session() as conn:
+        return load_price_alert_history(conn, limit=limit)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_price_alert_thresholds() -> List[PriceThreshold]:
+    """All configured price-alert thresholds - the DB-backed replacement
+    for the old hardcoded PRICE_THRESHOLDS constant. See dashboard/views/
+    price_alert_config.py for the add/edit/remove UI."""
+    with db_session() as conn:
+        return list_price_alert_configs(conn)
+
+
+def add_or_update_price_alert_threshold(
+    ticker: str,
+    above: Optional[float] = None,
+    below: Optional[float] = None,
+) -> None:
+    """Explicit, user-triggered write from dashboard/views/
+    price_alert_config.py's add/edit form - never called on page load. Adds
+    a new ticker's threshold or overwrites an existing one's
+    (single-row-per-ticker, so add and edit are the same operation)."""
+    with db_session() as conn:
+        upsert_price_alert_config(conn, ticker=ticker, above=above, below=below)
+    get_price_alert_thresholds.clear()
+
+
+def remove_price_alert_threshold(ticker: str) -> None:
+    """Explicit, user-triggered write from dashboard/views/
+    price_alert_config.py's remove control - never called on page load."""
+    with db_session() as conn:
+        delete_price_alert_config(conn, ticker)
+    get_price_alert_thresholds.clear()
 
 
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
@@ -658,6 +702,8 @@ def clear_all_caches():
     get_ticker_detail.clear()
     get_backtest_report.clear()
     get_alert_history.clear()
+    get_price_alert_history.clear()
+    get_price_alert_thresholds.clear()
     get_run_history.clear()
     get_paper_portfolio.clear()
     get_paper_order_history.clear()

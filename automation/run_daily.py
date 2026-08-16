@@ -7,8 +7,8 @@ Discord. Real delivery requires the explicit --send flag - exactly the
 same gate alerts/run_alerts.py uses, reused here rather than re-invented.
 
 Usage:
-    python -m automation.run_daily                      # dry-run, full watchlist
-    python -m automation.run_daily --tickers AAPL MSFT   # dry-run, specific tickers
+    python -m automation.run_daily                      # dry-run, WATCHLIST + configured price-alert tickers
+    python -m automation.run_daily --tickers AAPL MSFT   # dry-run, specific tickers (exact list, no union)
     python -m automation.run_daily --send                # REAL Discord delivery - use deliberately
     python -m automation.run_daily --force-run            # bypass the NYSE trading-day check
 
@@ -26,8 +26,16 @@ from datetime import date
 from automation.config import DEFAULT_PIPELINE_CONFIG
 from automation.lock import LockHeldError, acquire_run_lock
 from automation.pipeline import run_pipeline
-from config.settings import DISCORD_WEBHOOK_URL, WATCHLIST
+from config.settings import (
+    ALERT_EMAIL_FROM,
+    ALERT_EMAIL_TO,
+    DISCORD_WEBHOOK_URL,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_USERNAME,
+)
 from db.database import db_session
+from db.price_alert_config_repository import list_price_alert_configs
 from db.run_history_repository import (
     STATUS_FAILED,
     STATUS_PARTIAL_FAILURE,
@@ -79,14 +87,34 @@ def print_summary(result):
         else:
             alert_state = f"no change (score={o.alert_result.evaluation.current_score})"
         print(f"  {o.ticker:6s} {ingest_state:32s} | {alert_state}")
+
+        if o.ingest_ok and o.price_alert_result is not None:
+            pr = o.price_alert_result
+            if not pr.evaluation.ok:
+                price_state = f"price alert unavailable: {pr.evaluation.reason_unavailable}"
+            elif pr.fired:
+                price_state = f"PRICE ALERT FIRED: {pr.evaluation.reasons}"
+            elif pr.suppressed_by_cooldown:
+                price_state = "price alert suppressed (cooldown)"
+            elif pr.evaluation.previous_price is None:
+                price_state = f"price baseline established (price={pr.evaluation.current_price})"
+            else:
+                price_state = f"price: no change (price={pr.evaluation.current_price})"
+            print(f"  {' ' * 6} {' ' * 32} | {price_state}")
+        elif o.price_evaluation_error:
+            print(f"  {' ' * 6} {' ' * 32} | PRICE EVAL FAILED: {o.price_evaluation_error}")
     print(f"{'=' * 70}")
     print(f"Attempted: {result.tickers_attempted}  Updated: {result.tickers_updated}  "
-          f"Failed: {result.tickers_failed}  Alerts generated: {result.alerts_generated}")
+          f"Failed: {result.tickers_failed}  Alerts generated: {result.alerts_generated}  "
+          f"Price alerts generated: {result.price_alerts_generated}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run one complete automation cycle")
-    parser.add_argument("--tickers", nargs="+", default=WATCHLIST)
+    parser.add_argument(
+        "--tickers", nargs="+", default=None,
+        help="Tickers to run. Default: WATCHLIST plus any ticker with a configured price alert threshold.",
+    )
     parser.add_argument(
         "--send", action="store_true",
         help="Actually deliver eligible alerts to Discord. Without this flag, runs in dry-run mode.",
@@ -105,9 +133,16 @@ def main():
         if not DISCORD_WEBHOOK_URL:
             print("ERROR: --send was passed but DISCORD_WEBHOOK_URL is not configured in the environment.", file=sys.stderr)
             sys.exit(EXIT_TOTAL_FAILURE)
-        logger.info("REAL SEND MODE: eligible alerts will be delivered to Discord.")
+        smtp_configured = bool(SMTP_HOST and SMTP_USERNAME and SMTP_PASSWORD and ALERT_EMAIL_FROM and ALERT_EMAIL_TO)
+        with db_session() as conn:
+            has_price_thresholds = bool(list_price_alert_configs(conn))
+        if has_price_thresholds and not smtp_configured:
+            print("ERROR: --send was passed with price thresholds configured, but SMTP/email settings "
+                  "are not fully configured in the environment.", file=sys.stderr)
+            sys.exit(EXIT_TOTAL_FAILURE)
+        logger.info("REAL SEND MODE: eligible alerts will be delivered to Discord/email.")
     else:
-        logger.info("DRY-RUN MODE (default): no Discord messages will be sent.")
+        logger.info("DRY-RUN MODE (default): no Discord messages or emails will be sent.")
 
     try:
         with acquire_run_lock(DEFAULT_PIPELINE_CONFIG.lock_path):

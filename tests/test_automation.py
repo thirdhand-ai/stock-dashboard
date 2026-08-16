@@ -18,6 +18,7 @@ import pytest
 from automation.lock import LockHeldError, acquire_run_lock
 from automation.pipeline import run_pipeline
 from automation.trading_calendar import is_likely_trading_day
+from db.price_alert_config_repository import upsert_price_alert_config
 from db.run_history_repository import (
     STATUS_FAILED,
     STATUS_PARTIAL_FAILURE,
@@ -182,6 +183,34 @@ def test_successful_multi_ticker_run():
     assert result.tickers_updated == 3
     assert result.tickers_failed == 0
     mock_post.assert_not_called()  # dry-run: no Discord calls even though data refreshed
+
+
+def test_default_run_ingests_watchlist_plus_configured_price_alert_tickers():
+    """A ticker with a price-alert threshold but no WATCHLIST membership
+    (e.g. added from the dashboard's Price Alert Thresholds page, see
+    dashboard/views/price_alert_config.py) must still get ingested on a
+    default (no explicit --tickers) automation run, or its price data goes
+    stale and the only way to refresh it is a manual, non-WATCHLIST
+    ingestion call - exactly what caused the SOURCE_PRIORITY collision on
+    NOW earlier. An explicit `tickers=` argument must NOT be unioned - it's
+    honored exactly as passed (see test_successful_multi_ticker_run etc.)."""
+    conn = make_test_db()
+    upsert_price_alert_config(conn, "ZZZ", above=200.0, below=None)  # not in WATCHLIST
+    fake_ingest = fake_ingest_ticker_factory()
+
+    with patch("automation.pipeline.WATCHLIST", ["AAA", "BBB"]), \
+         patch("automation.pipeline.alpaca_source.ingest_ticker", side_effect=fake_ingest), \
+         patch("alerts.engine.compute_indicators_for_ticker", side_effect=lambda conn, t: strong_indicator_result(t)), \
+         patch("alerts.price_engine.compute_indicators_for_ticker", side_effect=lambda conn, t: strong_indicator_result(t)):
+        result = run_pipeline(conn, today=date(2026, 8, 10))  # tickers=None -> default union
+
+    assert [o.ticker for o in result.outcomes] == ["AAA", "BBB", "ZZZ"]
+
+    outcomes_by_ticker = {o.ticker: o for o in result.outcomes}
+    zzz = outcomes_by_ticker["ZZZ"]
+    assert zzz.ingest_ok is True
+    assert zzz.ingest_rows == 1
+    assert zzz.price_alert_result is not None  # threshold was actually evaluated, not skipped
 
 
 def test_one_ticker_ingest_failure_does_not_abort_others():
