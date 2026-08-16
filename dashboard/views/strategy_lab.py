@@ -42,6 +42,19 @@ VARIANT_LABELS = {
 }
 
 
+def _format_most_correlated_pair(pair):
+    """Render concentration_diagnostics()'s most_correlated_pair - either
+    None or a raw (ticker_a: str, ticker_b: str, correlation: float) tuple -
+    as a display string. Must never hand the raw tuple to a DataFrame that
+    feeds st.dataframe: a column mixing None with (str, str, float) tuples
+    has no single Arrow type and pyarrow serialization raises ArrowTypeError
+    (see tests/test_strategy_lab.py's regression test for this)."""
+    if pair is None:
+        return None
+    ticker_a, ticker_b, correlation = pair
+    return f"{ticker_a} / {ticker_b} ({correlation:.3f})"
+
+
 def _horizon_picker(key: str) -> int:
     return st.select_slider("Forward-return horizon (trading days)", options=HORIZON_OPTIONS, value=20, key=key)
 
@@ -732,7 +745,7 @@ def _render_realistic_portfolio():
             conc_rows.append({
                 "Variant": label, "Tickers held": len(c.get("holding_frequency", {})),
                 "Avg pairwise correlation": c.get("avg_pairwise_correlation"),
-                "Most correlated pair": c.get("most_correlated_pair"),
+                "Most correlated pair": _format_most_correlated_pair(c.get("most_correlated_pair")),
             })
     if conc_rows:
         st.dataframe(pd.DataFrame(conc_rows), use_container_width=True, hide_index=True)

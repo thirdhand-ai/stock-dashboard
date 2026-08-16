@@ -783,3 +783,91 @@ def test_strategy_lab_report_module_never_calls_alpaca_trading_client():
     assert "trading" not in report_module.__dict__
     imports = _module_level_import_names(os.path.join(REPO_ROOT, "strategy_lab", "report.py"))
     assert "trading" not in imports and not any(i.startswith("trading.") for i in imports)
+
+
+# --- Regression: Strategy Lab "Most correlated pair" ArrowTypeError crash ---
+#
+# concentration_diagnostics() returns most_correlated_pair as either None or
+# a raw (ticker_a: str, ticker_b: str, correlation: float) tuple. Handing
+# that tuple straight to a DataFrame column feeding st.dataframe crashed the
+# Phase 11 "Concentration / correlation diagnostics" table with a pyarrow
+# ArrowTypeError, because a column mixing None with heterogeneous str/float
+# tuples has no single inferable Arrow type. The fix formats the tuple into
+# a plain string via dashboard.views.strategy_lab._format_most_correlated_pair()
+# before it ever reaches a DataFrame. These tests guard both ends: that
+# concentration_diagnostics keeps returning the documented tuple shape, and
+# that the dashboard's formatting keeps the resulting column pyarrow-safe.
+
+def test_concentration_diagnostics_most_correlated_pair_is_ticker_ticker_float_tuple():
+    """concentration_diagnostics' most_correlated_pair must stay a raw
+    (ticker_a, ticker_b, correlation) 3-tuple - the dashboard's
+    _format_most_correlated_pair() depends on unpacking exactly that
+    shape."""
+    from strategy_lab.portfolio_simulator import SimulationResult, Trade, concentration_diagnostics
+
+    frames = {
+        "AAPL": make_ohlcv(60, seed=1, trend=0.3),
+        "MSFT": make_ohlcv(60, seed=1, trend=0.3),  # same seed -> strongly correlated with AAPL
+        "TSLA": make_ohlcv(60, seed=99, trend=-0.2),
+    }
+    trades = [
+        Trade(ticker="AAPL", entry_date="2021-02-01", entry_price=100.0, qty=1),
+        Trade(ticker="MSFT", entry_date="2021-02-01", entry_price=100.0, qty=1),
+        Trade(ticker="TSLA", entry_date="2021-02-01", entry_price=100.0, qty=1),
+    ]
+    result = SimulationResult(variant_name="test", equity_curve=pd.DataFrame(), trades=trades)
+
+    diag = concentration_diagnostics(result, frames)
+
+    pair = diag["most_correlated_pair"]
+    assert isinstance(pair, tuple) and len(pair) == 3
+    ticker_a, ticker_b, correlation = pair
+    assert isinstance(ticker_a, str) and isinstance(ticker_b, str)
+    assert isinstance(correlation, float)
+
+
+def test_concentration_diagnostics_most_correlated_pair_none_when_fewer_than_two_tickers_held():
+    from strategy_lab.portfolio_simulator import SimulationResult, Trade, concentration_diagnostics
+
+    trades = [Trade(ticker="AAPL", entry_date="2021-02-01", entry_price=100.0, qty=1)]
+    result = SimulationResult(variant_name="test", equity_curve=pd.DataFrame(), trades=trades)
+
+    diag = concentration_diagnostics(result, {"AAPL": make_ohlcv(60, seed=1)})
+    assert diag["most_correlated_pair"] is None
+
+
+def test_format_most_correlated_pair_handles_none():
+    from dashboard.views.strategy_lab import _format_most_correlated_pair
+
+    assert _format_most_correlated_pair(None) is None
+
+
+def test_format_most_correlated_pair_formats_tuple_as_plain_string():
+    from dashboard.views.strategy_lab import _format_most_correlated_pair
+
+    formatted = _format_most_correlated_pair(("AAPL", "MSFT", 0.8523))
+    assert formatted == "AAPL / MSFT (0.852)"
+    assert isinstance(formatted, str)
+
+
+def test_most_correlated_pair_column_survives_arrow_serialization_after_formatting():
+    """Reproduces the exact crash: a DataFrame column mixing None with raw
+    (str, str, float) tuples fails pyarrow serialization (what st.dataframe
+    does internally), while the same column built through
+    _format_most_correlated_pair() serializes cleanly."""
+    import pyarrow as pa
+
+    from dashboard.views.strategy_lab import _format_most_correlated_pair
+
+    raw_rows = [
+        {"Variant": "CONTROL", "Most correlated pair": ("AAPL", "MSFT", 0.852)},
+        {"Variant": "Experiment A", "Most correlated pair": None},
+    ]
+    with pytest.raises(pa.ArrowTypeError):
+        pa.Table.from_pandas(pd.DataFrame(raw_rows))
+
+    formatted_rows = [
+        {"Variant": "CONTROL", "Most correlated pair": _format_most_correlated_pair(("AAPL", "MSFT", 0.852))},
+        {"Variant": "Experiment A", "Most correlated pair": _format_most_correlated_pair(None)},
+    ]
+    pa.Table.from_pandas(pd.DataFrame(formatted_rows))  # must not raise
