@@ -19,6 +19,7 @@ from automation.lock import LockHeldError, acquire_run_lock
 from automation.pipeline import run_pipeline
 from automation.trading_calendar import is_likely_trading_day
 from db.price_alert_config_repository import upsert_price_alert_config
+from db.volatility_alert_config_repository import upsert_volatility_alert_config
 from db.run_history_repository import (
     STATUS_FAILED,
     STATUS_PARTIAL_FAILURE,
@@ -211,6 +212,46 @@ def test_default_run_ingests_watchlist_plus_configured_price_alert_tickers():
     assert zzz.ingest_ok is True
     assert zzz.ingest_rows == 1
     assert zzz.price_alert_result is not None  # threshold was actually evaluated, not skipped
+
+
+def test_default_run_ingests_watchlist_plus_configured_volatility_alert_tickers():
+    """Same contract as test_default_run_ingests_watchlist_plus_configured_price_alert_tickers,
+    for a ticker whose only configuration is a volatility (day-over-day %
+    move) threshold - see dashboard/views/volatility_alert_config.py."""
+    conn = make_test_db()
+    upsert_volatility_alert_config(conn, "YYY", threshold_percent=5.0)  # not in WATCHLIST
+    fake_ingest = fake_ingest_ticker_factory()
+
+    with patch("automation.pipeline.WATCHLIST", ["AAA", "BBB"]), \
+         patch("automation.pipeline.alpaca_source.ingest_ticker", side_effect=fake_ingest), \
+         patch("alerts.engine.compute_indicators_for_ticker", side_effect=lambda conn, t: strong_indicator_result(t)):
+        result = run_pipeline(conn, today=date(2026, 8, 10))  # tickers=None -> default union
+
+    assert [o.ticker for o in result.outcomes] == ["AAA", "BBB", "YYY"]
+
+    outcomes_by_ticker = {o.ticker: o for o in result.outcomes}
+    yyy = outcomes_by_ticker["YYY"]
+    assert yyy.ingest_ok is True
+    assert yyy.volatility_alert_result is not None  # threshold was actually evaluated, not skipped
+
+
+def test_volatility_alert_evaluated_alongside_price_alert_for_same_ticker():
+    """A ticker can be configured for both alert types at once - both must
+    be evaluated independently on the same run."""
+    conn = make_test_db()
+    upsert_price_alert_config(conn, "ZZZ", above=200.0, below=None)
+    upsert_volatility_alert_config(conn, "ZZZ", threshold_percent=5.0)
+    fake_ingest = fake_ingest_ticker_factory()
+
+    with patch("automation.pipeline.WATCHLIST", []), \
+         patch("automation.pipeline.alpaca_source.ingest_ticker", side_effect=fake_ingest), \
+         patch("alerts.engine.compute_indicators_for_ticker", side_effect=lambda conn, t: strong_indicator_result(t)), \
+         patch("alerts.price_engine.compute_indicators_for_ticker", side_effect=lambda conn, t: strong_indicator_result(t)):
+        result = run_pipeline(conn, today=date(2026, 8, 10))
+
+    zzz = {o.ticker: o for o in result.outcomes}["ZZZ"]
+    assert zzz.price_alert_result is not None
+    assert zzz.volatility_alert_result is not None
 
 
 def test_one_ticker_ingest_failure_does_not_abort_others():

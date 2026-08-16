@@ -24,6 +24,11 @@ REASON_LABELS = {
     "price_below": "crossed below",
 }
 
+VOLATILITY_REASON_LABELS = {
+    "volatility_up": "jumped",
+    "volatility_down": "dropped",
+}
+
 
 @dataclass
 class DeliveryResult:
@@ -46,6 +51,31 @@ def build_email_message(evaluation) -> EmailMessage:
         f"{evaluation.ticker} {direction} your configured threshold of ${threshold_value:,.2f}.\n\n"
         f"Current price: ${evaluation.current_price:,.2f}{prev_price_text}\n"
         f"As of: {evaluation.data_date} ({evaluation.source})\n\n"
+        "Signal-monitoring alert only - not an executed trade, not financial advice."
+    )
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = ALERT_EMAIL_FROM
+    message["To"] = ALERT_EMAIL_TO
+    message.set_content(body)
+    return message
+
+
+def build_volatility_email_message(evaluation) -> EmailMessage:
+    """Build the email for one triggered VolatilityAlertEvaluation. Pure
+    function, no network call - reused by both a real send and by dry-run
+    reporting, same convention as build_email_message above."""
+    reason = evaluation.reasons[0] if evaluation.reasons else ""
+    direction = VOLATILITY_REASON_LABELS.get(reason, reason)
+    move_pct = evaluation.move_pct if evaluation.move_pct is not None else 0.0
+
+    subject = f"{evaluation.ticker} {direction} {move_pct:+.2f}% today"
+    body = (
+        f"{evaluation.ticker} moved {abs(move_pct):.2f}% day-over-day, beyond your configured "
+        f"{evaluation.threshold_percent:.2f}% volatility threshold.\n\n"
+        f"Close: ${evaluation.current_price:,.2f} (was ${evaluation.previous_price:,.2f})\n"
+        f"As of: {evaluation.data_date} (prev {evaluation.previous_date}, {evaluation.source})\n\n"
         "Signal-monitoring alert only - not an executed trade, not financial advice."
     )
 

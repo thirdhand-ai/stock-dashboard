@@ -31,6 +31,11 @@ PRICE_REASON_LABELS = {
     "price_below": "crossed below",
 }
 
+VOLATILITY_REASON_LABELS = {
+    "volatility_up": "jumped",
+    "volatility_down": "dropped",
+}
+
 
 @dataclass
 class DeliveryResult:
@@ -106,6 +111,45 @@ def build_price_alert_discord_payload(evaluation) -> dict:
                         "inline": True,
                     },
                     {"name": "As of", "value": f"{evaluation.data_date} ({evaluation.source})", "inline": True},
+                ],
+                "footer": {
+                    "text": "Signal-monitoring alert only — not an executed trade, not financial advice."
+                },
+            }
+        ]
+    }
+
+
+def build_volatility_alert_discord_payload(evaluation) -> dict:
+    """Build the Discord webhook JSON payload for one triggered
+    VolatilityAlertEvaluation (alerts/volatility_engine.py). Same
+    content/footer convention as build_price_alert_discord_payload above -
+    pure function, no network call, reused by both a real send and dry-run
+    reporting."""
+    reason = evaluation.reasons[0] if evaluation.reasons else ""
+    direction = VOLATILITY_REASON_LABELS.get(reason, reason)
+    move_pct = evaluation.move_pct if evaluation.move_pct is not None else 0.0
+
+    return {
+        "embeds": [
+            {
+                "title": f"{evaluation.ticker} {direction} {move_pct:+.2f}% today",
+                "description": (
+                    f"{evaluation.ticker} moved {abs(move_pct):.2f}% day-over-day, "
+                    f"beyond your configured {evaluation.threshold_percent:.2f}% volatility threshold."
+                ),
+                "color": ALERT_COLOR,
+                "fields": [
+                    {
+                        "name": "Close",
+                        "value": f"${evaluation.current_price:,.2f} (was ${evaluation.previous_price:,.2f})",
+                        "inline": True,
+                    },
+                    {
+                        "name": "As of",
+                        "value": f"{evaluation.data_date} (prev {evaluation.previous_date}, {evaluation.source})",
+                        "inline": True,
+                    },
                 ],
                 "footer": {
                     "text": "Signal-monitoring alert only — not an executed trade, not financial advice."

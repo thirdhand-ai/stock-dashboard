@@ -25,6 +25,7 @@ from backtest.runner import BacktestResult, run_backtest
 from backtest.walkforward import WalkForwardResult, run_walk_forward
 from config.settings import WATCHLIST
 from alerts.price_config import MODE_FIXED, PriceThreshold
+from alerts.volatility_config import VolatilityAlertConfig
 from db.alert_repository import load_alert_history
 from db.database import db_session
 from db.price_alert_config_repository import (
@@ -34,6 +35,12 @@ from db.price_alert_config_repository import (
 )
 from db.price_alert_repository import load_price_alert_history
 from db.price_repository import get_latest_fetched_at, load_price_history, resolve_source
+from db.volatility_alert_config_repository import (
+    delete_volatility_alert_config,
+    list_volatility_alert_configs,
+    upsert_volatility_alert_config,
+)
+from db.volatility_alert_repository import load_volatility_alert_history
 from db.run_history_repository import (
     STATUS_FAILED,
     STATUS_PARTIAL_FAILURE,
@@ -328,6 +335,42 @@ def remove_price_alert_threshold(ticker: str) -> None:
     with db_session() as conn:
         delete_price_alert_config(conn, ticker)
     get_price_alert_thresholds.clear()
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_volatility_alert_configs() -> List[VolatilityAlertConfig]:
+    """All configured volatility (day-over-day % move) thresholds - the
+    dashboard-editable toggle for which tickers get evaluated by
+    alerts/volatility_engine.py. See dashboard/views/volatility_alert_config.py
+    for the add/edit/remove UI."""
+    with db_session() as conn:
+        return list_volatility_alert_configs(conn)
+
+
+def add_or_update_volatility_alert_threshold(ticker: str, threshold_percent: float) -> None:
+    """Explicit, user-triggered write from dashboard/views/
+    volatility_alert_config.py's add/edit form - never called on page load.
+    Adds a new ticker's volatility threshold or overwrites an existing
+    one's (single-row-per-ticker, so add and edit are the same operation) -
+    this is also the "enable volatility alerts for this ticker" toggle."""
+    with db_session() as conn:
+        upsert_volatility_alert_config(conn, ticker=ticker, threshold_percent=threshold_percent)
+    get_volatility_alert_configs.clear()
+
+
+def remove_volatility_alert_threshold(ticker: str) -> None:
+    """Explicit, user-triggered write from dashboard/views/
+    volatility_alert_config.py's remove control - never called on page
+    load. This is the "disable volatility alerts for this ticker" toggle."""
+    with db_session() as conn:
+        delete_volatility_alert_config(conn, ticker)
+    get_volatility_alert_configs.clear()
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_volatility_alert_history(limit: int = 200) -> pd.DataFrame:
+    with db_session() as conn:
+        return load_volatility_alert_history(conn, limit=limit)
 
 
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
@@ -715,6 +758,8 @@ def clear_all_caches():
     get_alert_history.clear()
     get_price_alert_history.clear()
     get_price_alert_thresholds.clear()
+    get_volatility_alert_configs.clear()
+    get_volatility_alert_history.clear()
     get_run_history.clear()
     get_paper_portfolio.clear()
     get_paper_order_history.clear()

@@ -103,10 +103,29 @@ def print_summary(result):
             print(f"  {' ' * 6} {' ' * 32} | {price_state}")
         elif o.price_evaluation_error:
             print(f"  {' ' * 6} {' ' * 32} | PRICE EVAL FAILED: {o.price_evaluation_error}")
+
+        if o.ingest_ok and o.volatility_alert_result is not None:
+            vr = o.volatility_alert_result
+            if not vr.evaluation.ok:
+                volatility_state = f"volatility alert unavailable: {vr.evaluation.reason_unavailable}"
+            elif vr.fired:
+                volatility_state = f"VOLATILITY ALERT FIRED: {vr.evaluation.reasons} ({vr.evaluation.move_pct:+.2f}%)"
+            elif vr.suppressed_already_alerted_today:
+                volatility_state = "volatility alert suppressed (already alerted for this trading day)"
+            elif vr.suppressed_by_cooldown:
+                volatility_state = "volatility alert suppressed (cooldown)"
+            elif vr.evaluation.previous_price is None:
+                volatility_state = f"volatility baseline established (close={vr.evaluation.current_price})"
+            else:
+                volatility_state = f"volatility: no significant move (move={vr.evaluation.move_pct:+.2f}%)"
+            print(f"  {' ' * 6} {' ' * 32} | {volatility_state}")
+        elif o.volatility_evaluation_error:
+            print(f"  {' ' * 6} {' ' * 32} | VOLATILITY EVAL FAILED: {o.volatility_evaluation_error}")
     print(f"{'=' * 70}")
     print(f"Attempted: {result.tickers_attempted}  Updated: {result.tickers_updated}  "
           f"Failed: {result.tickers_failed}  Alerts generated: {result.alerts_generated}  "
-          f"Price alerts generated: {result.price_alerts_generated}")
+          f"Price alerts generated: {result.price_alerts_generated}  "
+          f"Volatility alerts generated: {result.volatility_alerts_generated}")
 
 
 def main():

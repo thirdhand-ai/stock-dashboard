@@ -17,11 +17,14 @@ from alerts.config import DEFAULT_ALERT_CONFIG, AlertConfig
 from alerts.price_config import DEFAULT_PRICE_ALERT_CONFIG, PriceAlertConfig
 from alerts.price_runner import PriceAlertRunResult, run_price_alert_cycle
 from alerts.runner import AlertRunResult, run_alert_cycle
+from alerts.volatility_config import DEFAULT_VOLATILITY_ALERT_CONFIG, VolatilityAlertRunConfig
+from alerts.volatility_runner import VolatilityAlertRunResult, run_volatility_alert_cycle
 from automation.config import DEFAULT_PIPELINE_CONFIG, PipelineConfig
 from automation.trading_calendar import is_likely_trading_day
 from config.settings import WATCHLIST
 from db.alert_repository import get_alert_state
 from db.price_alert_config_repository import list_price_alert_configs
+from db.volatility_alert_config_repository import list_volatility_alert_configs
 from db.run_history_repository import (
     SEND_MODE_DRY_RUN,
     SEND_MODE_REAL,
@@ -52,10 +55,17 @@ class TickerOutcome:
     last_known_checked_at: Optional[str] = None
     price_alert_result: Optional[PriceAlertRunResult] = None
     price_evaluation_error: Optional[str] = None
+    volatility_alert_result: Optional[VolatilityAlertRunResult] = None
+    volatility_evaluation_error: Optional[str] = None
 
     @property
     def failed(self) -> bool:
-        return not self.ingest_ok or self.evaluation_error is not None or self.price_evaluation_error is not None
+        return (
+            not self.ingest_ok
+            or self.evaluation_error is not None
+            or self.price_evaluation_error is not None
+            or self.volatility_evaluation_error is not None
+        )
 
     @property
     def fired_alert(self) -> bool:
@@ -64,6 +74,10 @@ class TickerOutcome:
     @property
     def fired_price_alert(self) -> bool:
         return bool(self.price_alert_result and self.price_alert_result.fired)
+
+    @property
+    def fired_volatility_alert(self) -> bool:
+        return bool(self.volatility_alert_result and self.volatility_alert_result.fired)
 
 
 @dataclass
@@ -93,6 +107,10 @@ class PipelineResult:
     @property
     def price_alerts_generated(self) -> int:
         return sum(1 for o in self.outcomes if o.fired_price_alert)
+
+    @property
+    def volatility_alerts_generated(self) -> int:
+        return sum(1 for o in self.outcomes if o.fired_volatility_alert)
 
 
 def _ingest_ticker(conn, ticker: str, source: str, lookback_days: int, pipeline_config: PipelineConfig) -> TickerOutcome:
@@ -159,6 +177,25 @@ def _evaluate_ticker_price_alert(
     return outcome
 
 
+def _evaluate_ticker_volatility_alert(
+    conn, outcome: TickerOutcome, volatility_alert_config: VolatilityAlertRunConfig, send: bool, volatility_configs_by_ticker: dict
+) -> TickerOutcome:
+    # Same fail-closed rule as _evaluate_ticker_price_alert: never evaluate
+    # (and therefore never mutate volatility_alert_state/volatility_alerts)
+    # a ticker whose fresh ingestion for THIS run failed. A ticker with no
+    # configured VolatilityAlertConfig is simply skipped.
+    volatility_config = volatility_configs_by_ticker.get(outcome.ticker)
+    if not outcome.ingest_ok or volatility_config is None:
+        return outcome
+    try:
+        results = run_volatility_alert_cycle(conn, configs=[volatility_config], config=volatility_alert_config, send=send)
+        outcome.volatility_alert_result = results[0]
+    except Exception as e:
+        logger.error("volatility alert evaluation failed for %s: %s\n%s", outcome.ticker, e, traceback.format_exc())
+        outcome.volatility_evaluation_error = f"{type(e).__name__}: {e}"
+    return outcome
+
+
 def run_pipeline(
     conn,
     tickers: Optional[List[str]] = None,
@@ -167,6 +204,7 @@ def run_pipeline(
     pipeline_config: PipelineConfig = DEFAULT_PIPELINE_CONFIG,
     alert_config: AlertConfig = DEFAULT_ALERT_CONFIG,
     price_alert_config: PriceAlertConfig = DEFAULT_PRICE_ALERT_CONFIG,
+    volatility_alert_config: VolatilityAlertRunConfig = DEFAULT_VOLATILITY_ALERT_CONFIG,
     today: Optional[date] = None,
     skip_non_trading_day_check: bool = False,
 ) -> PipelineResult:
@@ -178,13 +216,16 @@ def run_pipeline(
     without touching the filesystem.
     """
     thresholds_by_ticker = {t.ticker: t for t in list_price_alert_configs(conn)}
+    volatility_configs_by_ticker = {c.ticker: c for c in list_volatility_alert_configs(conn)}
     if tickers is None:
         # Default run: WATCHLIST plus any ticker with a configured price
-        # alert threshold, so adding one from the dashboard keeps its price
-        # data fresh automatically without needing to also join WATCHLIST.
-        # An explicit `tickers=` argument (CLI --tickers, tests) is honored
-        # exactly as passed, no union applied.
-        tickers = WATCHLIST + sorted(t for t in thresholds_by_ticker if t not in WATCHLIST)
+        # alert threshold OR a configured volatility alert threshold, so
+        # adding either from the dashboard keeps its price data fresh
+        # automatically without needing to also join WATCHLIST. An explicit
+        # `tickers=` argument (CLI --tickers, tests) is honored exactly as
+        # passed, no union applied.
+        configured_extra_tickers = set(thresholds_by_ticker) | set(volatility_configs_by_ticker)
+        tickers = WATCHLIST + sorted(t for t in configured_extra_tickers if t not in WATCHLIST)
     source = price_source or pipeline_config.price_source
     send_mode = SEND_MODE_REAL if send else SEND_MODE_DRY_RUN
     check_date = today or date.today()
@@ -202,6 +243,7 @@ def run_pipeline(
             outcome = _ingest_ticker(conn, ticker, source, pipeline_config.alpaca_lookback_days, pipeline_config)
             outcome = _evaluate_ticker_alerts(conn, outcome, alert_config, send)
             outcome = _evaluate_ticker_price_alert(conn, outcome, price_alert_config, send, thresholds_by_ticker)
+            outcome = _evaluate_ticker_volatility_alert(conn, outcome, volatility_alert_config, send, volatility_configs_by_ticker)
             outcomes.append(outcome)
     except Exception as e:
         # Truly unexpected top-level failure (e.g. DB connection lost
@@ -227,7 +269,10 @@ def run_pipeline(
     error_summary = None
     failures = [o for o in outcomes if o.failed]
     if failures:
-        parts = [f"{o.ticker}: {o.ingest_error or o.evaluation_error or o.price_evaluation_error}" for o in failures]
+        parts = [
+            f"{o.ticker}: {o.ingest_error or o.evaluation_error or o.price_evaluation_error or o.volatility_evaluation_error}"
+            for o in failures
+        ]
         error_summary = "; ".join(parts)[:2000]
 
     finish_run(
