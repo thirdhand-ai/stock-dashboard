@@ -87,6 +87,20 @@ def build_volatility_email_message(evaluation) -> EmailMessage:
     return message
 
 
+def build_daily_digest_email_message(body: str) -> EmailMessage:
+    """Build the email for the daily digest. Pure function, no network
+    call - the body text is already fully formatted by
+    alerts/daily_digest_engine.py::format_digest_body, so this just wraps
+    it in a subject/from/to envelope, same convention as
+    build_email_message above."""
+    message = EmailMessage()
+    message["Subject"] = "Stock Dashboard - Daily Digest"
+    message["From"] = ALERT_EMAIL_FROM
+    message["To"] = ALERT_EMAIL_TO
+    message.set_content(body)
+    return message
+
+
 def send_email_alert(message: EmailMessage, timeout: float = 10.0) -> DeliveryResult:
     """Real SMTP send. Fails safely (returns ok=False) rather than raising
     if SMTP isn't configured - the caller decides how to record that."""

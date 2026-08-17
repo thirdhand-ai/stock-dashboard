@@ -7,7 +7,7 @@ every view to build its Page objects.
 """
 import streamlit as st
 
-from dashboard.views import alert_history, backtest_report, ops_overview, paper_portfolio, price_alert_config, research_center, strategy_lab, ticker_detail, volatility_alert_config, watchlist
+from dashboard.views import alert_history, backtest_report, daily_digest_config, ops_overview, paper_portfolio, price_alert_config, research_center, strategy_lab, ticker_detail, volatility_alert_config, watchlist
 
 PAGE_WATCHLIST = st.Page(watchlist.render, title="Watchlist", icon="📋", url_path="watchlist", default=True)
 PAGE_TICKER_DETAIL = st.Page(ticker_detail.render, title="Ticker Detail", icon="📈", url_path="detail")
@@ -17,10 +17,11 @@ PAGE_BACKTEST = st.Page(backtest_report.render, title="Backtest Report", icon="�
 PAGE_ALERTS = st.Page(alert_history.render, title="Alert History", icon="🔔", url_path="alerts")
 PAGE_PRICE_ALERT_CONFIG = st.Page(price_alert_config.render, title="Price Alert Thresholds", icon="⚙️", url_path="price-alert-config")
 PAGE_VOLATILITY_ALERT_CONFIG = st.Page(volatility_alert_config.render, title="Volatility Alert Thresholds", icon="📉", url_path="volatility-alert-config")
+PAGE_DAILY_DIGEST_CONFIG = st.Page(daily_digest_config.render, title="Daily Digest", icon="📰", url_path="daily-digest")
 PAGE_STRATEGY_LAB = st.Page(strategy_lab.render, title="Strategy Lab", icon="🧫", url_path="strategy-lab")
 PAGE_OPS_OVERVIEW = st.Page(ops_overview.render, title="Operations", icon="🛠️", url_path="ops")
 
 NAV_STRUCTURE = {
     "Overview": [PAGE_WATCHLIST, PAGE_TICKER_DETAIL, PAGE_PAPER_PORTFOLIO, PAGE_OPS_OVERVIEW],
-    "Research": [PAGE_RESEARCH_CENTER, PAGE_BACKTEST, PAGE_ALERTS, PAGE_PRICE_ALERT_CONFIG, PAGE_VOLATILITY_ALERT_CONFIG, PAGE_STRATEGY_LAB],
+    "Research": [PAGE_RESEARCH_CENTER, PAGE_BACKTEST, PAGE_ALERTS, PAGE_PRICE_ALERT_CONFIG, PAGE_VOLATILITY_ALERT_CONFIG, PAGE_DAILY_DIGEST_CONFIG, PAGE_STRATEGY_LAB],
 }

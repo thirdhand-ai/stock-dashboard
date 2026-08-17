@@ -35,7 +35,9 @@ from config.settings import (
     SMTP_USERNAME,
 )
 from db.database import db_session
+from db.daily_digest_config_repository import get_digest_enabled
 from db.price_alert_config_repository import list_price_alert_configs
+from db.volatility_alert_config_repository import list_volatility_alert_configs
 from db.run_history_repository import (
     STATUS_FAILED,
     STATUS_PARTIAL_FAILURE,
@@ -197,6 +199,34 @@ def main():
         )
         print(f"Operational failure notification: {notification_result.reason} "
               f"(email_sent={notification_result.email_sent}, discord_sent={notification_result.discord_sent})")
+
+    if result.status != STATUS_SKIPPED_NON_TRADING_DAY:
+        # Fires win or fail (any status the pipeline actually attempted),
+        # unconditionally covering every ticker this run touched - not
+        # gated on any alert condition. Off by default; toggle from the
+        # Daily Digest dashboard page (dashboard/views/daily_digest_config.py).
+        from alerts.daily_digest_runner import run_daily_digest
+
+        with db_session() as conn:
+            digest_enabled = get_digest_enabled(conn)
+            if digest_enabled:
+                price_thresholds_by_ticker = {t.ticker: t for t in list_price_alert_configs(conn)}
+                volatility_configs_by_ticker = {c.ticker: c for c in list_volatility_alert_configs(conn)}
+                digest_result = run_daily_digest(
+                    conn,
+                    tickers=[o.ticker for o in result.outcomes],
+                    price_thresholds_by_ticker=price_thresholds_by_ticker,
+                    volatility_configs_by_ticker=volatility_configs_by_ticker,
+                    trading_date=date.today(),
+                    send=args.send,
+                )
+                logger.info(
+                    "daily digest: sent=%s reason=%s digest_id=%s email_ok=%s discord_ok=%s",
+                    digest_result.sent, digest_result.reason, digest_result.digest_id,
+                    digest_result.delivery.ok if digest_result.delivery else None,
+                    digest_result.discord_delivery.ok if digest_result.discord_delivery else None,
+                )
+                print(f"Daily digest: {digest_result.reason} (covering {len(digest_result.rows)} ticker(s))")
 
     if result.status in (STATUS_SUCCESS, STATUS_SKIPPED_NON_TRADING_DAY):
         sys.exit(EXIT_SUCCESS)

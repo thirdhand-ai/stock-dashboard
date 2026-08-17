@@ -41,6 +41,8 @@ from db.volatility_alert_config_repository import (
     upsert_volatility_alert_config,
 )
 from db.volatility_alert_repository import load_volatility_alert_history
+from db.daily_digest_config_repository import get_digest_enabled, set_digest_enabled
+from db.daily_digest_repository import load_digest_log
 from db.run_history_repository import (
     STATUS_FAILED,
     STATUS_PARTIAL_FAILURE,
@@ -371,6 +373,28 @@ def remove_volatility_alert_threshold(ticker: str) -> None:
 def get_volatility_alert_history(limit: int = 200) -> pd.DataFrame:
     with db_session() as conn:
         return load_volatility_alert_history(conn, limit=limit)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_daily_digest_enabled() -> bool:
+    """Whether the daily digest (dashboard/views/daily_digest_config.py) is
+    turned on. Off by default - see db/daily_digest_config_repository.py."""
+    with db_session() as conn:
+        return get_digest_enabled(conn)
+
+
+def set_daily_digest_enabled(enabled: bool) -> None:
+    """Explicit, user-triggered write from dashboard/views/
+    daily_digest_config.py's toggle - never called on page load."""
+    with db_session() as conn:
+        set_digest_enabled(conn, enabled)
+    get_daily_digest_enabled.clear()
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_daily_digest_log(limit: int = 50) -> pd.DataFrame:
+    with db_session() as conn:
+        return load_digest_log(conn, limit=limit)
 
 
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
@@ -772,6 +796,8 @@ def clear_all_caches():
     get_price_alert_thresholds.clear()
     get_volatility_alert_configs.clear()
     get_volatility_alert_history.clear()
+    get_daily_digest_enabled.clear()
+    get_daily_digest_log.clear()
     get_run_history.clear()
     get_paper_portfolio.clear()
     get_paper_order_history.clear()

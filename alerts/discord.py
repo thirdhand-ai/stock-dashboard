@@ -159,6 +159,33 @@ def build_volatility_alert_discord_payload(evaluation) -> dict:
     }
 
 
+def build_daily_digest_discord_payload(rows, trading_date: str) -> dict:
+    """Build the Discord webhook JSON payload for the daily digest - one
+    embed, one field per ticker line (from alerts/daily_digest_engine.py's
+    format_ticker_digest_line). Pure function, no network call - reused by
+    both a real send and dry-run reporting."""
+    from alerts.daily_digest_engine import format_ticker_digest_line
+
+    fields = [
+        {"name": row.ticker, "value": format_ticker_digest_line(row).split(": ", 1)[1], "inline": False}
+        for row in rows
+    ]
+
+    return {
+        "embeds": [
+            {
+                "title": f"Daily Digest — {trading_date}",
+                "description": f"{len(rows)} tracked ticker{'s' if len(rows) != 1 else ''}.",
+                "color": ALERT_COLOR,
+                "fields": fields,
+                "footer": {
+                    "text": "Daily summary only — not a stock signal, not a trade recommendation."
+                },
+            }
+        ]
+    }
+
+
 def send_discord_alert(payload: dict, timeout: float = 10.0) -> DeliveryResult:
     """Real network POST to the configured webhook. Fails safely (returns
     ok=False) rather than raising if the webhook isn't configured - the
