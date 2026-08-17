@@ -15,6 +15,7 @@ SQLite database populated by the existing ingestion layer.
 import dataclasses
 import logging
 from dataclasses import dataclass, field
+from datetime import date, datetime, time
 from typing import List, Optional
 
 import pandas as pd
@@ -25,8 +26,16 @@ from backtest.runner import BacktestResult, run_backtest
 from backtest.walkforward import WalkForwardResult, run_walk_forward
 from config.settings import WATCHLIST
 from alerts.price_config import MODE_FIXED, PriceThreshold
+from alerts.snooze import is_in_the_past, resolve_custom_snoozed_until, resolve_preset_snoozed_until
 from alerts.volatility_config import VolatilityAlertConfig
 from db.alert_repository import load_alert_history
+from db.alert_snooze_repository import (
+    ALERT_TYPE_PRICE,
+    ALERT_TYPE_VOLATILITY,
+    create_snooze,
+    delete_snooze,
+    list_active_snoozes,
+)
 from db.alert_test_log_repository import load_alert_test_log
 from db.database import db_session
 from db.price_alert_config_repository import (
@@ -341,6 +350,68 @@ def remove_price_alert_threshold(ticker: str) -> None:
     get_price_alert_thresholds.clear()
 
 
+# --- Snooze: temporary delivery suppression, shared by both alert types ---
+# See db/alert_snooze_schema.py's docstring for why one table backs both.
+
+
+def _local_tzinfo():
+    """The host machine's local timezone - used to interpret a snooze
+    dashboard date/time picker's input as wall-clock local time before
+    alerts/snooze.py converts it to the UTC format every snoozed_until is
+    stored in."""
+    return datetime.now().astimezone().tzinfo
+
+
+def _resolve_snoozed_until(preset: Optional[str], custom_date: Optional[date], custom_time: Optional[time]) -> str:
+    """Shared by snooze_price_ticker/snooze_volatility_ticker below - pass
+    either preset (a label from alerts.snooze.SNOOZE_PRESETS) or both
+    custom_date/custom_time, never both. Raises ValueError if neither is
+    given, or if the resolved end time is already in the past - a snooze
+    that would never suppress anything is rejected here, before it's ever
+    written."""
+    if preset:
+        snoozed_until = resolve_preset_snoozed_until(preset)
+    elif custom_date is not None and custom_time is not None:
+        snoozed_until = resolve_custom_snoozed_until(custom_date, custom_time, _local_tzinfo())
+    else:
+        raise ValueError("must provide either preset or both custom_date and custom_time")
+    if is_in_the_past(snoozed_until):
+        raise ValueError("snooze end time must be in the future")
+    return snoozed_until
+
+
+def unsnooze(snooze_id: int) -> None:
+    """Manual unsnooze - works for either alert type, since alert_snooze is
+    one shared table and this only ever needs the row's own id. Explicit,
+    user-triggered write from either config page's snooze section."""
+    with db_session() as conn:
+        delete_snooze(conn, snooze_id)
+    get_active_price_snoozes.clear()
+    get_active_volatility_snoozes.clear()
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_active_price_snoozes() -> pd.DataFrame:
+    """Every currently-active price-alert snooze - dashboard/views/
+    price_alert_config.py's snooze section, and the Alert Activity page's
+    'Currently Snoozed' summary."""
+    with db_session() as conn:
+        return list_active_snoozes(conn, alert_type=ALERT_TYPE_PRICE)
+
+
+def snooze_price_ticker(
+    ticker: Optional[str], preset: Optional[str] = None,
+    custom_date: Optional[date] = None, custom_time: Optional[time] = None,
+) -> None:
+    """ticker=None snoozes every price-alert ticker at once. Explicit,
+    user-triggered write from dashboard/views/price_alert_config.py's
+    snooze form - never called on page load."""
+    snoozed_until = _resolve_snoozed_until(preset, custom_date, custom_time)
+    with db_session() as conn:
+        create_snooze(conn, ALERT_TYPE_PRICE, ticker, snoozed_until)
+    get_active_price_snoozes.clear()
+
+
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
 def get_volatility_alert_configs() -> List[VolatilityAlertConfig]:
     """All configured volatility (day-over-day % move) thresholds - the
@@ -369,6 +440,28 @@ def remove_volatility_alert_threshold(ticker: str) -> None:
     with db_session() as conn:
         delete_volatility_alert_config(conn, ticker)
     get_volatility_alert_configs.clear()
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_active_volatility_snoozes() -> pd.DataFrame:
+    """Every currently-active volatility-alert snooze - same purpose as
+    get_active_price_snoozes above, for dashboard/views/
+    volatility_alert_config.py's snooze section."""
+    with db_session() as conn:
+        return list_active_snoozes(conn, alert_type=ALERT_TYPE_VOLATILITY)
+
+
+def snooze_volatility_ticker(
+    ticker: Optional[str], preset: Optional[str] = None,
+    custom_date: Optional[date] = None, custom_time: Optional[time] = None,
+) -> None:
+    """ticker=None snoozes every volatility-alert ticker at once. Explicit,
+    user-triggered write from dashboard/views/volatility_alert_config.py's
+    snooze form - never called on page load."""
+    snoozed_until = _resolve_snoozed_until(preset, custom_date, custom_time)
+    with db_session() as conn:
+        create_snooze(conn, ALERT_TYPE_VOLATILITY, ticker, snoozed_until)
+    get_active_volatility_snoozes.clear()
 
 
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
@@ -466,7 +559,9 @@ _TEST_LOG_TYPE_LABELS = {
 }
 
 
-def _channel_status(dry_run, delivered, error) -> str:
+def _channel_status(dry_run, delivered, error, suppressed_reason=None) -> str:
+    if suppressed_reason:
+        return f"suppressed ({suppressed_reason})"
     if dry_run:
         return "Dry-run (not sent)"
     if delivered:
@@ -491,16 +586,16 @@ def _load_alert_activity_feed(conn, limit: int = 500) -> pd.DataFrame:
         rows.append({
             "timestamp": r["triggered_at"], "type": "Price Alert", "ticker": r["ticker"],
             "description": f"{r['ticker']} {direction} ${r['threshold']:,.2f} (price ${r['price']:,.2f})",
-            "email_status": _channel_status(r["dry_run"], r["delivered"], r["delivery_error"]),
-            "discord_status": _channel_status(r["dry_run"], r["discord_delivered"], r["discord_delivery_error"]),
+            "email_status": _channel_status(r["dry_run"], r["delivered"], r["delivery_error"], r["suppressed_reason"]),
+            "discord_status": _channel_status(r["dry_run"], r["discord_delivered"], r["discord_delivery_error"], r["suppressed_reason"]),
         })
 
     for _, r in load_volatility_alert_history(conn, limit=limit).iterrows():
         rows.append({
             "timestamp": r["triggered_at"], "type": "Volatility Alert", "ticker": r["ticker"],
             "description": f"{r['ticker']} moved {r['move_pct']:+.2f}% (threshold ±{r['threshold_percent']:.2f}%)",
-            "email_status": _channel_status(r["dry_run"], r["delivered"], r["delivery_error"]),
-            "discord_status": _channel_status(r["dry_run"], r["discord_delivered"], r["discord_delivery_error"]),
+            "email_status": _channel_status(r["dry_run"], r["delivered"], r["delivery_error"], r["suppressed_reason"]),
+            "discord_status": _channel_status(r["dry_run"], r["discord_delivered"], r["discord_delivery_error"], r["suppressed_reason"]),
         })
 
     for _, r in load_digest_log(conn, limit=limit).iterrows():
@@ -538,6 +633,26 @@ def _load_alert_activity_feed(conn, limit: int = 500) -> pd.DataFrame:
 def get_alert_activity_feed(limit: int = 500) -> pd.DataFrame:
     with db_session() as conn:
         return _load_alert_activity_feed(conn, limit=limit)
+
+
+_SNOOZE_TYPE_LABELS = {ALERT_TYPE_PRICE: "Price Alert", ALERT_TYPE_VOLATILITY: "Volatility Alert"}
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_all_active_snoozes() -> pd.DataFrame:
+    """Every currently-active snooze across both alert types, for the
+    Alert Activity page's 'Currently Snoozed' section - the one place both
+    config pages' snooze state is visible together. Read-only; the actual
+    snooze/unsnooze controls live on dashboard/views/price_alert_config.py
+    and volatility_alert_config.py, not here."""
+    with db_session() as conn:
+        df = list_active_snoozes(conn)
+    if df.empty:
+        return df
+    df = df.copy()
+    df["type"] = df["alert_type"].map(_SNOOZE_TYPE_LABELS).fillna(df["alert_type"])
+    df["ticker"] = df["ticker"].fillna("All tickers")
+    return df
 
 
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)

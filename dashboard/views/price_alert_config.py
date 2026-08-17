@@ -23,9 +23,12 @@ from alerts.price_config import MODE_FIXED, MODE_PERCENT
 from dashboard import components
 from dashboard.data import (
     add_or_update_price_alert_threshold,
+    get_active_price_snoozes,
     get_price_alert_thresholds,
     remove_price_alert_threshold,
     send_price_alert_test_notification,
+    snooze_price_ticker,
+    unsnooze,
 )
 
 FIXED_LABEL = "Fixed dollar amount"
@@ -161,3 +164,12 @@ def render():
 
     st.divider()
     _render_remove_form(thresholds)
+
+    st.divider()
+    components.render_snooze_controls(
+        tickers=[t.ticker for t in thresholds],
+        active_snoozes_df=get_active_price_snoozes(),
+        snooze_fn=snooze_price_ticker,
+        unsnooze_fn=unsnooze,
+        key_prefix="price_alert",
+    )

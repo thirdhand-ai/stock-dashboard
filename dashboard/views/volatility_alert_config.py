@@ -19,9 +19,12 @@ import streamlit as st
 from dashboard import components
 from dashboard.data import (
     add_or_update_volatility_alert_threshold,
+    get_active_volatility_snoozes,
     get_volatility_alert_configs,
     remove_volatility_alert_threshold,
     send_volatility_alert_test_notification,
+    snooze_volatility_ticker,
+    unsnooze,
 )
 
 
@@ -118,3 +121,12 @@ def render():
 
     st.divider()
     _render_remove_form(configs)
+
+    st.divider()
+    components.render_snooze_controls(
+        tickers=[c.ticker for c in configs],
+        active_snoozes_df=get_active_volatility_snoozes(),
+        snooze_fn=snooze_volatility_ticker,
+        unsnooze_fn=unsnooze,
+        key_prefix="volatility_alert",
+    )

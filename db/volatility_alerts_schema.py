@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS volatility_alerts (
     delivery_error TEXT,
     discord_delivered INTEGER NOT NULL DEFAULT 0,
     discord_delivered_at TEXT,
-    discord_delivery_error TEXT
+    discord_delivery_error TEXT,
+    suppressed_reason TEXT
 );
 """
 
@@ -68,12 +69,26 @@ CREATE INDEX IF NOT EXISTS idx_volatility_alerts_ticker_triggered ON volatility_
 """
 
 
+def _migrate_add_suppressed_reason_column_to_volatility_alerts(conn):
+    """Additive: volatility_alerts gets suppressed_reason, same purpose and
+    convention as db/price_alerts_schema.py's
+    _migrate_add_suppressed_reason_column_to_price_alerts. Pre-existing
+    rows get NULL - they predate the snooze feature existing at all."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(volatility_alerts)").fetchall()}
+    if "suppressed_reason" not in cols:
+        conn.execute("ALTER TABLE volatility_alerts ADD COLUMN suppressed_reason TEXT")
+        conn.commit()
+
+
 def ensure_volatility_alerts_schema(conn) -> None:
     """Create volatility_alert_config/volatility_alert_state/volatility_alerts
-    if they don't exist yet. Idempotent - safe to call on every read/write,
-    same convention as db/price_alerts_schema.py::ensure_price_alerts_schema."""
+    if they don't exist yet, and apply any additive migration for a
+    pre-existing table missing newer columns. Idempotent - safe to call on
+    every read/write, same convention as
+    db/price_alerts_schema.py::ensure_price_alerts_schema."""
     conn.execute(CREATE_VOLATILITY_ALERT_CONFIG_TABLE)
     conn.execute(CREATE_VOLATILITY_ALERT_STATE_TABLE)
     conn.execute(CREATE_VOLATILITY_ALERTS_TABLE)
     conn.execute(CREATE_VOLATILITY_ALERTS_INDEX)
     conn.commit()
+    _migrate_add_suppressed_reason_column_to_volatility_alerts(conn)

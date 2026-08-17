@@ -16,6 +16,7 @@ unittest.mock.patch on alerts.discord.requests.post - no test in this file
 ever opens a real SMTP connection or makes a real network call to Discord.
 """
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -30,6 +31,7 @@ from alerts.price_engine import (
     evaluate_ticker_price,
 )
 from alerts.price_runner import run_price_alert_cycle
+from db.alert_snooze_repository import ALERT_TYPE_PRICE, create_snooze
 from db.price_alert_config_repository import upsert_price_alert_config
 from db.price_alert_repository import get_price_alert_state, load_price_alert_history, upsert_price_alert_state
 from db.schema import init_db
@@ -532,3 +534,121 @@ def test_price_alert_record_never_contains_discord_webhook_url():
     dump = history.to_string()
     assert "super-secret-token-value" not in dump
     assert "discord.com" not in dump
+
+
+# --- Snooze: delivery suppression + automatic expiry ---
+
+
+def _configured_delivery_patches():
+    """Same fully-configured-and-mocked SMTP set
+    test_successful_mocked_email_delivery_marks_delivered uses - real
+    delivery WOULD succeed if attempted, so a snoozed ticker never even
+    reaching send_email_alert is what these tests are actually proving."""
+    mock_server = MagicMock()
+    mock_smtp_cm = MagicMock()
+    mock_smtp_cm.__enter__.return_value = mock_server
+    return mock_server, [
+        patch("alerts.email.smtplib.SMTP", return_value=mock_smtp_cm),
+        patch("alerts.email.SMTP_HOST", "smtp.example.com"),
+        patch("alerts.email.SMTP_USERNAME", "user@example.com"),
+        patch("alerts.email.SMTP_PASSWORD", "app-password"),
+        patch("alerts.email.ALERT_EMAIL_FROM", "user@example.com"),
+        patch("alerts.email.ALERT_EMAIL_TO", "me@example.com"),
+    ]
+
+
+def test_snoozed_ticker_still_fires_and_logs_but_delivery_is_suppressed():
+    conn = make_test_db()
+    insert_placeholder_price_row(conn, "SNZ")
+    threshold = PriceThreshold(ticker="SNZ", above=200.0)
+    upsert_price_alert_state(conn, "SNZ", price=150.0, alerted=False)
+    snoozed_until = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    create_snooze(conn, ALERT_TYPE_PRICE, "SNZ", snoozed_until)
+
+    mock_server, p = _configured_delivery_patches()
+    with p[0], p[1], p[2], p[3], p[4], p[5], \
+         patch("alerts.discord.requests.post") as mock_discord_post, \
+         patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1/token"):
+        results = run_cycle_at_price(conn, "SNZ", threshold, close=210.0, send=True)
+
+    # Evaluated and logged exactly as if it were about to deliver...
+    assert results[0].fired is True
+    assert results[0].suppressed_by_snooze is True
+    assert results[0].alert_id is not None
+    # ...but neither channel was ever actually attempted.
+    mock_server.send_message.assert_not_called()
+    mock_discord_post.assert_not_called()
+    assert results[0].delivery is None
+    assert results[0].discord_delivery is None
+
+    row = load_price_alert_history(conn).iloc[0]
+    assert row["dry_run"] == 0  # a real send WAS requested, just suppressed
+    assert row["delivered"] == 0
+    assert row["discord_delivered"] == 0
+    assert row["suppressed_reason"] is not None
+    assert "snoozed" in row["suppressed_reason"]
+
+    # Cooldown/dedupe state is still stamped as if it had fired, same as
+    # any other fired evaluation - only delivery was skipped.
+    state = get_price_alert_state(conn, "SNZ")
+    assert state["last_price"] == pytest.approx(210.0)
+
+
+def test_global_snooze_suppresses_every_ticker_under_that_alert_type():
+    conn = make_test_db()
+    insert_placeholder_price_row(conn, "GLB")
+    threshold = PriceThreshold(ticker="GLB", above=200.0)
+    upsert_price_alert_state(conn, "GLB", price=150.0, alerted=False)
+    snoozed_until = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    create_snooze(conn, ALERT_TYPE_PRICE, None, snoozed_until)  # ticker=None: every ticker
+
+    with patch("alerts.email.smtplib.SMTP") as mock_smtp, \
+         patch("alerts.discord.requests.post") as mock_discord_post:
+        results = run_cycle_at_price(conn, "GLB", threshold, close=210.0, send=True)
+
+    assert results[0].suppressed_by_snooze is True
+    mock_smtp.assert_not_called()
+    mock_discord_post.assert_not_called()
+
+
+def test_dry_run_cycle_is_unaffected_by_an_active_snooze():
+    """send=False never delivers regardless of snooze state - the snooze
+    check only matters when a real send was actually requested."""
+    conn = make_test_db()
+    insert_placeholder_price_row(conn, "DRY")
+    threshold = PriceThreshold(ticker="DRY", above=200.0)
+    upsert_price_alert_state(conn, "DRY", price=150.0, alerted=False)
+    snoozed_until = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    create_snooze(conn, ALERT_TYPE_PRICE, "DRY", snoozed_until)
+
+    results = run_cycle_at_price(conn, "DRY", threshold, close=210.0, send=False)
+
+    assert results[0].fired is True
+    assert results[0].suppressed_by_snooze is False  # never even checked - send was False
+    row = load_price_alert_history(conn).iloc[0]
+    assert row["dry_run"] == 1
+    assert row["suppressed_reason"] is None
+
+
+def test_expired_snooze_no_longer_suppresses_delivery():
+    """A snooze past its end time stops suppressing on the next
+    evaluation automatically - no unsnooze action required."""
+    conn = make_test_db()
+    insert_placeholder_price_row(conn, "EXP")
+    threshold = PriceThreshold(ticker="EXP", above=200.0)
+    upsert_price_alert_state(conn, "EXP", price=150.0, alerted=False)
+    already_expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+    create_snooze(conn, ALERT_TYPE_PRICE, "EXP", already_expired)
+
+    mock_server, p = _configured_delivery_patches()
+    with p[0], p[1], p[2], p[3], p[4], p[5], \
+         patch("alerts.discord.requests.post") as mock_discord_post, \
+         patch("alerts.discord.DISCORD_WEBHOOK_URL", None):
+        results = run_cycle_at_price(conn, "EXP", threshold, close=210.0, send=True)
+
+    assert results[0].suppressed_by_snooze is False
+    mock_server.send_message.assert_called_once()
+
+    row = load_price_alert_history(conn).iloc[0]
+    assert row["delivered"] == 1
+    assert row["suppressed_reason"] is None

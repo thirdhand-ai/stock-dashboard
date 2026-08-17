@@ -20,6 +20,7 @@ unittest.mock.patch on alerts.discord.requests.post - no test in this file
 ever opens a real SMTP connection or makes a real network call to Discord.
 """
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -36,6 +37,7 @@ from alerts.volatility_engine import (
     evaluate_volatility_alerts,
 )
 from alerts.volatility_runner import run_volatility_alert_cycle
+from db.alert_snooze_repository import ALERT_TYPE_VOLATILITY, create_snooze
 from db.schema import init_db
 from db.volatility_alert_config_repository import upsert_volatility_alert_config
 from db.volatility_alert_repository import get_volatility_alert_state, load_volatility_alert_history
@@ -606,3 +608,117 @@ def test_volatility_alert_record_never_contains_discord_webhook_url():
     dump = history.to_string()
     assert "super-secret-token-value" not in dump
     assert "discord.com" not in dump
+
+
+# --- Snooze: delivery suppression + automatic expiry ---
+
+
+def _configured_delivery_patches():
+    """The same fully-configured-and-mocked SMTP/Discord patch set
+    test_successful_mocked_email_delivery_marks_delivered uses - real
+    delivery WOULD succeed if attempted, so a snoozed ticker never even
+    reaching send_email_alert/send_discord_alert is what these tests are
+    actually proving."""
+    mock_server = MagicMock()
+    mock_smtp_cm = MagicMock()
+    mock_smtp_cm.__enter__.return_value = mock_server
+    return mock_server, [
+        patch("alerts.email.smtplib.SMTP", return_value=mock_smtp_cm),
+        patch("alerts.email.SMTP_HOST", "smtp.example.com"),
+        patch("alerts.email.SMTP_USERNAME", "user@example.com"),
+        patch("alerts.email.SMTP_PASSWORD", "app-password"),
+        patch("alerts.email.ALERT_EMAIL_FROM", "user@example.com"),
+        patch("alerts.email.ALERT_EMAIL_TO", "me@example.com"),
+    ]
+
+
+def test_snoozed_ticker_still_fires_and_logs_but_delivery_is_suppressed():
+    conn = make_test_db()
+    insert_price_row(conn, "AAA", "2024-06-03", 100.0)
+    insert_price_row(conn, "AAA", "2024-06-04", 110.0)
+    config = VolatilityAlertConfig(ticker="AAA", threshold_percent=5.0)
+    snoozed_until = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    create_snooze(conn, ALERT_TYPE_VOLATILITY, "AAA", snoozed_until)
+
+    mock_server, email_patches = _configured_delivery_patches()
+    with email_patches[0], email_patches[1], email_patches[2], email_patches[3], email_patches[4], email_patches[5], \
+         patch("alerts.discord.requests.post") as mock_discord_post, \
+         patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1/token"):
+        results = run_volatility_alert_cycle(conn, configs=[config], config=TEST_CONFIG, send=True)
+
+    # Evaluated and logged exactly as if it were about to deliver...
+    assert results[0].fired is True
+    assert results[0].suppressed_by_snooze is True
+    assert results[0].alert_id is not None
+    # ...but neither channel was ever actually attempted.
+    mock_server.send_message.assert_not_called()
+    mock_discord_post.assert_not_called()
+    assert results[0].delivery is None
+    assert results[0].discord_delivery is None
+
+    row = load_volatility_alert_history(conn).iloc[0]
+    assert row["dry_run"] == 0  # a real send WAS requested, just suppressed
+    assert row["delivered"] == 0
+    assert row["discord_delivered"] == 0
+    assert row["suppressed_reason"] is not None
+    assert "snoozed" in row["suppressed_reason"]
+
+
+def test_global_snooze_suppresses_every_ticker_under_that_alert_type():
+    conn = make_test_db()
+    insert_price_row(conn, "AAA", "2024-06-03", 100.0)
+    insert_price_row(conn, "AAA", "2024-06-04", 110.0)
+    config = VolatilityAlertConfig(ticker="AAA", threshold_percent=5.0)
+    snoozed_until = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    create_snooze(conn, ALERT_TYPE_VOLATILITY, None, snoozed_until)  # ticker=None: every ticker
+
+    with patch("alerts.email.smtplib.SMTP") as mock_smtp, \
+         patch("alerts.discord.requests.post") as mock_discord_post:
+        results = run_volatility_alert_cycle(conn, configs=[config], config=TEST_CONFIG, send=True)
+
+    assert results[0].suppressed_by_snooze is True
+    mock_smtp.assert_not_called()
+    mock_discord_post.assert_not_called()
+
+
+def test_dry_run_cycle_is_unaffected_by_an_active_snooze():
+    """send=False never delivers regardless of snooze state - the snooze
+    check only matters when a real send was actually requested."""
+    conn = make_test_db()
+    insert_price_row(conn, "AAA", "2024-06-03", 100.0)
+    insert_price_row(conn, "AAA", "2024-06-04", 110.0)
+    config = VolatilityAlertConfig(ticker="AAA", threshold_percent=5.0)
+    snoozed_until = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    create_snooze(conn, ALERT_TYPE_VOLATILITY, "AAA", snoozed_until)
+
+    results = run_volatility_alert_cycle(conn, configs=[config], config=TEST_CONFIG, send=False)
+
+    assert results[0].fired is True
+    assert results[0].suppressed_by_snooze is False  # never even checked - send was False
+    row = load_volatility_alert_history(conn).iloc[0]
+    assert row["dry_run"] == 1
+    assert row["suppressed_reason"] is None
+
+
+def test_expired_snooze_no_longer_suppresses_delivery():
+    """A snooze past its end time stops suppressing on the next
+    evaluation automatically - no unsnooze action required."""
+    conn = make_test_db()
+    insert_price_row(conn, "AAA", "2024-06-03", 100.0)
+    insert_price_row(conn, "AAA", "2024-06-04", 110.0)
+    config = VolatilityAlertConfig(ticker="AAA", threshold_percent=5.0)
+    already_expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+    create_snooze(conn, ALERT_TYPE_VOLATILITY, "AAA", already_expired)
+
+    mock_server, email_patches = _configured_delivery_patches()
+    with email_patches[0], email_patches[1], email_patches[2], email_patches[3], email_patches[4], email_patches[5], \
+         patch("alerts.discord.requests.post") as mock_discord_post, \
+         patch("alerts.discord.DISCORD_WEBHOOK_URL", None):
+        results = run_volatility_alert_cycle(conn, configs=[config], config=TEST_CONFIG, send=True)
+
+    assert results[0].suppressed_by_snooze is False
+    mock_server.send_message.assert_called_once()
+
+    row = load_volatility_alert_history(conn).iloc[0]
+    assert row["delivered"] == 1
+    assert row["suppressed_reason"] is None

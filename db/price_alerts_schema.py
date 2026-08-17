@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS price_alerts (
     delivery_error TEXT,
     discord_delivered INTEGER NOT NULL DEFAULT 0,
     discord_delivered_at TEXT,
-    discord_delivery_error TEXT
+    discord_delivery_error TEXT,
+    suppressed_reason TEXT
 );
 """
 
@@ -103,6 +104,19 @@ def _migrate_add_percent_mode_columns_to_price_alert_config(conn):
         conn.commit()
 
 
+def _migrate_add_suppressed_reason_column_to_price_alerts(conn):
+    """Additive: price_alerts gets suppressed_reason so a snoozed ticker's
+    fired-but-undelivered alert (alerts/price_runner.py, when
+    db/alert_snooze_repository.py's get_active_snooze finds an active
+    snooze) shows as 'suppressed (snoozed)' rather than looking identical
+    to a plain dry-run or a delivery failure. Pre-existing rows get NULL -
+    they predate the snooze feature existing at all, never backfilled."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(price_alerts)").fetchall()}
+    if "suppressed_reason" not in cols:
+        conn.execute("ALTER TABLE price_alerts ADD COLUMN suppressed_reason TEXT")
+        conn.commit()
+
+
 def ensure_price_alerts_schema(conn) -> None:
     """Create price_alerts/price_alert_state/price_alert_config if they
     don't exist yet, and apply any additive migration for a pre-existing
@@ -116,3 +130,4 @@ def ensure_price_alerts_schema(conn) -> None:
     conn.commit()
     _migrate_add_discord_columns_to_price_alerts(conn)
     _migrate_add_percent_mode_columns_to_price_alert_config(conn)
+    _migrate_add_suppressed_reason_column_to_price_alerts(conn)

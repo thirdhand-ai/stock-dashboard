@@ -26,12 +26,14 @@ from alerts.discord import DeliveryResult as DiscordDeliveryResult, build_volati
 from alerts.email import DeliveryResult as EmailDeliveryResult, build_volatility_email_message, send_email_alert
 from alerts.volatility_config import DEFAULT_VOLATILITY_ALERT_CONFIG, VolatilityAlertConfig, VolatilityAlertRunConfig
 from alerts.volatility_engine import VolatilityAlertEvaluation, evaluate_volatility_alerts
+from db.alert_snooze_repository import ALERT_TYPE_VOLATILITY, get_active_snooze
 from db.volatility_alert_repository import (
     get_volatility_alert_state,
     mark_delivered,
     mark_delivery_failed,
     mark_discord_delivered,
     mark_discord_delivery_failed,
+    mark_suppressed_by_snooze,
     record_volatility_alert,
     upsert_volatility_alert_state,
 )
@@ -45,6 +47,7 @@ class VolatilityAlertRunResult:
     fired: bool                        # threshold exceeded AND not suppressed (already-alerted-today or cooldown)
     suppressed_already_alerted_today: bool = False
     suppressed_by_cooldown: bool = False
+    suppressed_by_snooze: bool = False  # fired and would have delivered, but the ticker (or all tickers) was snoozed
     alert_id: Optional[int] = None
     delivery: Optional[EmailDeliveryResult] = None
     discord_delivery: Optional[DiscordDeliveryResult] = None
@@ -107,6 +110,7 @@ def run_volatility_alert_cycle(
         alert_id = None
         delivery = None
         discord_delivery = None
+        active_snooze = None
 
         if fired and persist:
             alert_id = record_volatility_alert(
@@ -123,7 +127,15 @@ def run_volatility_alert_cycle(
                 dry_run=not send,
             )
 
+            # A snoozed ticker is still evaluated and logged above, exactly
+            # as if it were about to deliver - only the send_email_alert/
+            # send_discord_alert calls themselves are skipped. Checked only
+            # when send=True: a dry-run never delivers anyway, so there is
+            # nothing for a snooze to suppress.
             if send:
+                active_snooze = get_active_snooze(conn, ALERT_TYPE_VOLATILITY, evaluation.ticker)
+
+            if send and active_snooze is None:
                 message = build_volatility_email_message(evaluation)
                 delivery = send_email_alert(message)
                 if delivery.ok:
@@ -137,6 +149,8 @@ def run_volatility_alert_cycle(
                     mark_discord_delivered(conn, alert_id)
                 else:
                     mark_discord_delivery_failed(conn, alert_id, discord_delivery.error or "unknown delivery error")
+            elif send and active_snooze is not None:
+                mark_suppressed_by_snooze(conn, alert_id, active_snooze.snoozed_until)
 
         if persist:
             upsert_volatility_alert_state(
@@ -149,6 +163,7 @@ def run_volatility_alert_cycle(
             evaluation=evaluation, fired=fired,
             suppressed_already_alerted_today=already_alerted_today,
             suppressed_by_cooldown=cooldown_active,
+            suppressed_by_snooze=active_snooze is not None,
             alert_id=alert_id, delivery=delivery, discord_delivery=discord_delivery,
         ))
 

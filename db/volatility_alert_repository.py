@@ -22,7 +22,7 @@ VOLATILITY_ALERT_COLUMNS = [
     "id", "ticker", "triggered_at", "move_pct", "threshold_percent", "previous_close",
     "current_close", "previous_date", "data_date", "source", "message", "dry_run",
     "delivered", "delivered_at", "delivery_error",
-    "discord_delivered", "discord_delivered_at", "discord_delivery_error",
+    "discord_delivered", "discord_delivered_at", "discord_delivery_error", "suppressed_reason",
 ]
 
 
@@ -116,6 +116,27 @@ def mark_discord_delivery_failed(conn, alert_id, error):
     cur.execute(
         "UPDATE volatility_alerts SET discord_delivered = 0, discord_delivery_error = ? WHERE id = ?",
         (str(error), alert_id),
+    )
+    conn.commit()
+
+
+def mark_suppressed_by_snooze(conn, alert_id, snoozed_until):
+    """Mark a fired volatility alert as delivery-suppressed because its
+    ticker (or all tickers) was snoozed at evaluation time - same
+    convention as db/price_alert_repository.py::mark_suppressed_by_snooze.
+    Only ever called in place of the send_email_alert/send_discord_alert
+    calls in alerts/volatility_runner.py, never after them."""
+    ensure_volatility_alerts_schema(conn)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE volatility_alerts SET
+            delivered = 0, delivered_at = NULL, delivery_error = NULL,
+            discord_delivered = 0, discord_delivered_at = NULL, discord_delivery_error = NULL,
+            suppressed_reason = ?
+        WHERE id = ?
+        """,
+        (f"snoozed until {snoozed_until}", alert_id),
     )
     conn.commit()
 

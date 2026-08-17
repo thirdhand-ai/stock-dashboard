@@ -21,12 +21,14 @@ from alerts.discord import DeliveryResult as DiscordDeliveryResult, build_price_
 from alerts.email import DeliveryResult as EmailDeliveryResult, build_email_message, send_email_alert
 from alerts.price_config import DEFAULT_PRICE_ALERT_CONFIG, PriceAlertConfig, PriceThreshold
 from alerts.price_engine import PriceAlertEvaluation, evaluate_price_thresholds
+from db.alert_snooze_repository import ALERT_TYPE_PRICE, get_active_snooze
 from db.price_alert_repository import (
     get_price_alert_state,
     mark_delivered,
     mark_delivery_failed,
     mark_discord_delivered,
     mark_discord_delivery_failed,
+    mark_suppressed_by_snooze,
     record_price_alert,
     upsert_price_alert_state,
 )
@@ -39,6 +41,7 @@ class PriceAlertRunResult:
     evaluation: PriceAlertEvaluation
     fired: bool                        # reasons detected AND not suppressed by cooldown
     suppressed_by_cooldown: bool = False
+    suppressed_by_snooze: bool = False  # fired and would have delivered, but the ticker (or all tickers) was snoozed
     alert_id: Optional[int] = None
     delivery: Optional[EmailDeliveryResult] = None            # email channel (unchanged field name/semantics)
     discord_delivery: Optional[DiscordDeliveryResult] = None  # Discord channel
@@ -104,6 +107,7 @@ def run_price_alert_cycle(
         alert_id = None
         delivery = None
         discord_delivery = None
+        active_snooze = None
 
         if fired and persist:
             reason = evaluation.reasons[0]
@@ -121,7 +125,15 @@ def run_price_alert_cycle(
                 dry_run=not send,
             )
 
+            # A snoozed ticker is still evaluated and logged above, exactly
+            # as if it were about to deliver - only the send_email_alert/
+            # send_discord_alert calls themselves are skipped. Checked only
+            # when send=True: a dry-run never delivers anyway, so there is
+            # nothing for a snooze to suppress.
             if send:
+                active_snooze = get_active_snooze(conn, ALERT_TYPE_PRICE, evaluation.ticker)
+
+            if send and active_snooze is None:
                 message = build_email_message(evaluation)
                 delivery = send_email_alert(message)
                 if delivery.ok:
@@ -135,6 +147,8 @@ def run_price_alert_cycle(
                     mark_discord_delivered(conn, alert_id)
                 else:
                     mark_discord_delivery_failed(conn, alert_id, discord_delivery.error or "unknown delivery error")
+            elif send and active_snooze is not None:
+                mark_suppressed_by_snooze(conn, alert_id, active_snooze.snoozed_until)
 
         if persist:
             upsert_price_alert_state(
@@ -145,6 +159,7 @@ def run_price_alert_cycle(
 
         results.append(PriceAlertRunResult(
             evaluation=evaluation, fired=fired, suppressed_by_cooldown=suppressed,
+            suppressed_by_snooze=active_snooze is not None,
             alert_id=alert_id, delivery=delivery, discord_delivery=discord_delivery,
         ))
 

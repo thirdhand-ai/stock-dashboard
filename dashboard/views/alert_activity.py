@@ -9,7 +9,34 @@ no write path is added here or anywhere reachable from this page.
 import streamlit as st
 
 from dashboard import components
-from dashboard.data import get_alert_activity_feed
+from dashboard.data import get_alert_activity_feed, get_all_active_snoozes
+
+
+def _render_currently_snoozed():
+    st.subheader("Currently Snoozed")
+    snoozes = get_all_active_snoozes()
+    if snoozes.empty:
+        st.caption("Nothing is currently snoozed.")
+        return
+
+    from datetime import datetime
+
+    from alerts.snooze import format_snoozed_until_local
+
+    local_tz = datetime.now().astimezone().tzinfo
+    display = [
+        {
+            "Alert type": row["type"],
+            "Ticker": row["ticker"],
+            "Snoozed until (local)": format_snoozed_until_local(row["snoozed_until"], local_tz),
+        }
+        for _, row in snoozes.iterrows()
+    ]
+    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.caption(
+        "Manage snoozes from the Price Alert Thresholds / Volatility Alert Thresholds pages. "
+        "A snooze past its end time stops suppressing on the next evaluation automatically - no action needed."
+    )
 
 
 def render():
@@ -21,6 +48,9 @@ def render():
         "and never sends anything."
     )
     components.disclaimer("Signal-monitoring activity log only - not a stock signal, not a trade recommendation.")
+
+    _render_currently_snoozed()
+    st.divider()
 
     feed = get_alert_activity_feed()
     if feed.empty:
