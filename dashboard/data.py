@@ -682,6 +682,18 @@ def get_paper_order_history(limit: int = 300) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_real_holdings_view() -> List:
+    """Actual (non-simulated) held positions - entirely separate from the
+    Alpaca-paper-account data get_paper_portfolio above reads. See
+    trading/real_holdings.py's docstring: a position missing shares/cost
+    basis (needs_manual_entry) comes back with None derived fields rather
+    than a fabricated number."""
+    from trading.real_holdings import build_real_holdings_view
+    with db_session() as conn:
+        return build_real_holdings_view(conn)
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
 def get_paper_equity_curve() -> pd.DataFrame:
     with db_session() as conn:
         return trading_portfolio.get_equity_curve(conn)

@@ -24,6 +24,7 @@ from automation.trading_calendar import is_likely_trading_day
 from config.settings import WATCHLIST
 from db.alert_repository import get_alert_state
 from db.price_alert_config_repository import list_price_alert_configs
+from db.real_holdings_repository import list_real_holdings
 from db.volatility_alert_config_repository import list_volatility_alert_configs
 from db.run_history_repository import (
     SEND_MODE_DRY_RUN,
@@ -219,12 +220,15 @@ def run_pipeline(
     volatility_configs_by_ticker = {c.ticker: c for c in list_volatility_alert_configs(conn)}
     if tickers is None:
         # Default run: WATCHLIST plus any ticker with a configured price
-        # alert threshold OR a configured volatility alert threshold, so
-        # adding either from the dashboard keeps its price data fresh
-        # automatically without needing to also join WATCHLIST. An explicit
-        # `tickers=` argument (CLI --tickers, tests) is honored exactly as
-        # passed, no union applied.
-        configured_extra_tickers = set(thresholds_by_ticker) | set(volatility_configs_by_ticker)
+        # alert threshold, a configured volatility alert threshold, OR a
+        # tracked real_holdings position, so adding any of those from the
+        # dashboard keeps its price data fresh automatically without also
+        # needing to join WATCHLIST - same fix as the alert-config union,
+        # extended to real holdings so "current price" on that page never
+        # goes stale. An explicit `tickers=` argument (CLI --tickers,
+        # tests) is honored exactly as passed, no union applied.
+        real_holding_tickers = {h.ticker for h in list_real_holdings(conn)}
+        configured_extra_tickers = set(thresholds_by_ticker) | set(volatility_configs_by_ticker) | real_holding_tickers
         tickers = WATCHLIST + sorted(t for t in configured_extra_tickers if t not in WATCHLIST)
     source = price_source or pipeline_config.price_source
     send_mode = SEND_MODE_REAL if send else SEND_MODE_DRY_RUN

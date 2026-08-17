@@ -19,6 +19,7 @@ from automation.lock import LockHeldError, acquire_run_lock
 from automation.pipeline import run_pipeline
 from automation.trading_calendar import is_likely_trading_day
 from db.price_alert_config_repository import upsert_price_alert_config
+from db.real_holdings_repository import upsert_real_holding
 from db.volatility_alert_config_repository import upsert_volatility_alert_config
 from db.run_history_repository import (
     STATUS_FAILED,
@@ -233,6 +234,29 @@ def test_default_run_ingests_watchlist_plus_configured_volatility_alert_tickers(
     yyy = outcomes_by_ticker["YYY"]
     assert yyy.ingest_ok is True
     assert yyy.volatility_alert_result is not None  # threshold was actually evaluated, not skipped
+
+
+def test_default_run_ingests_watchlist_plus_real_holdings_tickers():
+    """Same contract as test_default_run_ingests_watchlist_plus_configured_price_alert_tickers,
+    for a ticker tracked only via real_holdings (dashboard/views/
+    real_holdings.py) - a real position with no alert configured must
+    still get its price data refreshed on a default run, or "current
+    price" on that page goes stale exactly the way NOW's did before the
+    original union fix."""
+    conn = make_test_db()
+    upsert_real_holding(conn, "WWW", shares=10, cost_basis_total=1000.0)  # not in WATCHLIST
+    fake_ingest = fake_ingest_ticker_factory()
+
+    with patch("automation.pipeline.WATCHLIST", ["AAA", "BBB"]), \
+         patch("automation.pipeline.alpaca_source.ingest_ticker", side_effect=fake_ingest), \
+         patch("alerts.engine.compute_indicators_for_ticker", side_effect=lambda conn, t: strong_indicator_result(t)):
+        result = run_pipeline(conn, today=date(2026, 8, 10))  # tickers=None -> default union
+
+    assert [o.ticker for o in result.outcomes] == ["AAA", "BBB", "WWW"]
+
+    outcomes_by_ticker = {o.ticker: o for o in result.outcomes}
+    www = outcomes_by_ticker["WWW"]
+    assert www.ingest_ok is True
 
 
 def test_volatility_alert_evaluated_alongside_price_alert_for_same_ticker():
