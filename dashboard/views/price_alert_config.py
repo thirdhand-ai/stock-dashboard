@@ -25,6 +25,7 @@ from dashboard.data import (
     add_or_update_price_alert_threshold,
     get_price_alert_thresholds,
     remove_price_alert_threshold,
+    send_price_alert_test_notification,
 )
 
 FIXED_LABEL = "Fixed dollar amount"
@@ -127,6 +128,19 @@ def _render_remove_form(thresholds):
         st.rerun()
 
 
+def _render_test_alert_button():
+    st.subheader("Verify delivery")
+    st.caption(
+        "Sends a real, clearly [TEST]-labeled sample price alert over email + Discord using fixed "
+        "placeholder data. Never touches a real threshold, price_alert_state, or crossing-detection "
+        "logic - this only proves your SMTP/Discord config can deliver."
+    )
+    if st.button("Send Test Alert", key="price_alert_test_send_button"):
+        with st.spinner("Sending test alert..."):
+            result = send_price_alert_test_notification()
+        components.render_test_send_result(result)
+
+
 def render():
     st.title("Price Alert Thresholds")
     st.caption(
@@ -136,6 +150,9 @@ def render():
     )
     components.disclaimer("Signal-monitoring alert configuration only - not an executed trade, not financial advice.")
 
+    _render_test_alert_button()
+
+    st.divider()
     thresholds = get_price_alert_thresholds()
     _render_current_thresholds(thresholds)
 

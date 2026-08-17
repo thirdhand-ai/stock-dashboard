@@ -35,3 +35,16 @@ def disclaimer(text: str):
 
 def empty_state(title: str, body: str, icon: str = "ℹ️"):
     st.info(f"**{title}**\n\n{body}", icon=icon)
+
+
+def render_test_send_result(result):
+    """Render an alerts/alert_test_notifications.py TestSendResult as a
+    success/failure confirmation showing which channels delivered. Shared
+    by every alert-config page's "Send Test Alert" button (Price Alert
+    Thresholds, Volatility Alert Thresholds, Daily Digest)."""
+    email_status = "delivered" if result.email.ok else f"failed ({result.email.error})"
+    discord_status = "delivered" if result.discord.ok else f"failed ({result.discord.error})"
+    if result.any_ok:
+        st.success(f"Test alert sent. Email: {email_status} | Discord: {discord_status}")
+    else:
+        st.error(f"Test alert failed on both channels. Email: {email_status} | Discord: {discord_status}")

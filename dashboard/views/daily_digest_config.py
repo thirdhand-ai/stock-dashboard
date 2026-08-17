@@ -15,7 +15,12 @@ win or fail) - see alerts/daily_digest_engine.py's docstring.
 import streamlit as st
 
 from dashboard import components
-from dashboard.data import get_daily_digest_enabled, get_daily_digest_log, set_daily_digest_enabled
+from dashboard.data import (
+    get_daily_digest_enabled,
+    get_daily_digest_log,
+    send_daily_digest_test_notification,
+    set_daily_digest_enabled,
+)
 
 
 def _render_toggle(enabled: bool):
@@ -67,6 +72,20 @@ def _render_recent_digests():
     st.dataframe(display[columns], use_container_width=True, hide_index=True)
 
 
+def _render_test_alert_button():
+    st.subheader("Verify delivery")
+    st.caption(
+        "Sends a real, clearly [TEST]-labeled sample digest over email + Discord using fixed "
+        "placeholder tickers. Never touches a real ticker price, threshold, or daily_digest_log - "
+        "this only proves your SMTP/Discord config can deliver, and never counts against the "
+        "once-per-day digest send limit."
+    )
+    if st.button("Send Test Alert", key="daily_digest_test_send_button"):
+        with st.spinner("Sending test alert..."):
+            result = send_daily_digest_test_notification()
+        components.render_test_send_result(result)
+
+
 def render():
     st.title("Daily Digest")
     st.caption(
@@ -77,6 +96,9 @@ def render():
     )
     components.disclaimer("Daily summary only - not a stock signal, not a trade recommendation.")
 
+    _render_test_alert_button()
+
+    st.divider()
     enabled = get_daily_digest_enabled()
     _render_toggle(enabled)
 

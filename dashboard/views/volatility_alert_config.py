@@ -21,6 +21,7 @@ from dashboard.data import (
     add_or_update_volatility_alert_threshold,
     get_volatility_alert_configs,
     remove_volatility_alert_threshold,
+    send_volatility_alert_test_notification,
 )
 
 
@@ -83,6 +84,19 @@ def _render_remove_form(configs):
         st.rerun()
 
 
+def _render_test_alert_button():
+    st.subheader("Verify delivery")
+    st.caption(
+        "Sends a real, clearly [TEST]-labeled sample volatility alert over email + Discord using "
+        "fixed placeholder data. Never touches a real threshold, volatility_alert_state, or "
+        "crossing-detection logic - this only proves your SMTP/Discord config can deliver."
+    )
+    if st.button("Send Test Alert", key="volatility_alert_test_send_button"):
+        with st.spinner("Sending test alert..."):
+            result = send_volatility_alert_test_notification()
+        components.render_test_send_result(result)
+
+
 def render():
     st.title("Volatility Alert Thresholds")
     st.caption(
@@ -93,6 +107,9 @@ def render():
     )
     components.disclaimer("Signal-monitoring alert configuration only - not an executed trade, not financial advice.")
 
+    _render_test_alert_button()
+
+    st.divider()
     configs = get_volatility_alert_configs()
     _render_current_thresholds(configs)
 

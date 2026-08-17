@@ -397,6 +397,34 @@ def get_daily_digest_log(limit: int = 50) -> pd.DataFrame:
         return load_digest_log(conn, limit=limit)
 
 
+def send_price_alert_test_notification():
+    """Explicit, user-triggered "Send Test Alert" click from dashboard/views/
+    price_alert_config.py - see alerts/alert_test_notifications.py's
+    docstring for the isolation contract (no DB connection anywhere in
+    this path; cannot touch price_alert_state or any real threshold)."""
+    from alerts.alert_test_notifications import send_price_alert_test
+    return send_price_alert_test()
+
+
+def send_volatility_alert_test_notification():
+    """Explicit, user-triggered "Send Test Alert" click from dashboard/views/
+    volatility_alert_config.py - same isolation contract as
+    send_price_alert_test_notification above; cannot touch
+    volatility_alert_state."""
+    from alerts.alert_test_notifications import send_volatility_alert_test
+    return send_volatility_alert_test()
+
+
+def send_daily_digest_test_notification():
+    """Explicit, user-triggered "Send Test Alert" click from dashboard/views/
+    daily_digest_config.py - same isolation contract as
+    send_price_alert_test_notification above; never touches
+    daily_digest_log, so this never counts against the real once-per-day
+    digest send limit."""
+    from alerts.alert_test_notifications import send_daily_digest_test
+    return send_daily_digest_test()
+
+
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
 def get_run_history(limit: int = 20) -> pd.DataFrame:
     """Read-only: shows what automation/run_daily.py has done. This
