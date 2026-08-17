@@ -27,6 +27,7 @@ from config.settings import WATCHLIST
 from alerts.price_config import MODE_FIXED, PriceThreshold
 from alerts.volatility_config import VolatilityAlertConfig
 from db.alert_repository import load_alert_history
+from db.alert_test_log_repository import load_alert_test_log
 from db.database import db_session
 from db.price_alert_config_repository import (
     delete_price_alert_config,
@@ -43,6 +44,7 @@ from db.volatility_alert_config_repository import (
 from db.volatility_alert_repository import load_volatility_alert_history
 from db.daily_digest_config_repository import get_digest_enabled, set_digest_enabled
 from db.daily_digest_repository import load_digest_log
+from db.ops_notification_repository import load_operational_notifications
 from db.run_history_repository import (
     STATUS_FAILED,
     STATUS_PARTIAL_FAILURE,
@@ -397,13 +399,35 @@ def get_daily_digest_log(limit: int = 50) -> pd.DataFrame:
         return load_digest_log(conn, limit=limit)
 
 
+def _record_test_send(alert_type: str, result) -> None:
+    """Shared persistence step for every send_*_test_notification wrapper
+    below - runs AFTER delivery already completed, and writes only to the
+    dedicated alert_test_log table (db/alert_test_log_repository.py),
+    never to price_alert_state/volatility_alert_state/daily_digest_log.
+    The delivery functions in alerts/alert_test_notifications.py remain
+    completely unaware this table exists - see that module's docstring."""
+    from db.alert_test_log_repository import record_test_send
+    with db_session() as conn:
+        record_test_send(
+            conn, alert_type,
+            result.email.ok, result.email.error,
+            result.discord.ok, result.discord.error,
+        )
+    get_alert_activity_feed.clear()
+
+
 def send_price_alert_test_notification():
     """Explicit, user-triggered "Send Test Alert" click from dashboard/views/
     price_alert_config.py - see alerts/alert_test_notifications.py's
-    docstring for the isolation contract (no DB connection anywhere in
-    this path; cannot touch price_alert_state or any real threshold)."""
+    docstring for the isolation contract (delivery itself never opens a DB
+    connection; cannot touch price_alert_state or any real threshold).
+    The outcome is logged afterward to alert_test_log only - see
+    _record_test_send above."""
     from alerts.alert_test_notifications import send_price_alert_test
-    return send_price_alert_test()
+    from db.alert_test_log_repository import ALERT_TYPE_PRICE
+    result = send_price_alert_test()
+    _record_test_send(ALERT_TYPE_PRICE, result)
+    return result
 
 
 def send_volatility_alert_test_notification():
@@ -412,7 +436,10 @@ def send_volatility_alert_test_notification():
     send_price_alert_test_notification above; cannot touch
     volatility_alert_state."""
     from alerts.alert_test_notifications import send_volatility_alert_test
-    return send_volatility_alert_test()
+    from db.alert_test_log_repository import ALERT_TYPE_VOLATILITY
+    result = send_volatility_alert_test()
+    _record_test_send(ALERT_TYPE_VOLATILITY, result)
+    return result
 
 
 def send_daily_digest_test_notification():
@@ -422,7 +449,95 @@ def send_daily_digest_test_notification():
     daily_digest_log, so this never counts against the real once-per-day
     digest send limit."""
     from alerts.alert_test_notifications import send_daily_digest_test
-    return send_daily_digest_test()
+    from db.alert_test_log_repository import ALERT_TYPE_DIGEST
+    result = send_daily_digest_test()
+    _record_test_send(ALERT_TYPE_DIGEST, result)
+    return result
+
+
+# --- Alert Activity: read-only feed merging every notification-history table ---
+
+ALERT_ACTIVITY_COLUMNS = ["timestamp", "type", "ticker", "description", "email_status", "discord_status"]
+
+_TEST_LOG_TYPE_LABELS = {
+    "price_alert": "Test Send: Price Alert",
+    "volatility_alert": "Test Send: Volatility Alert",
+    "daily_digest": "Test Send: Daily Digest",
+}
+
+
+def _channel_status(dry_run, delivered, error) -> str:
+    if dry_run:
+        return "Dry-run (not sent)"
+    if delivered:
+        return "delivered"
+    if error:
+        return f"failed ({error})"
+    return "pending"
+
+
+def _load_alert_activity_feed(conn, limit: int = 500) -> pd.DataFrame:
+    """Read-only merge of every notification-history table in the system
+    into one chronological feed: price_alerts, volatility_alerts,
+    daily_digest_log, operational_notifications, and alert_test_log. Pure
+    aggregation - this function only ever SELECTs from those five tables
+    (via their own existing load_* readers), never writes anything, and
+    applies no filtering itself; dashboard/views/alert_activity.py applies
+    type/date filters on the already-merged result."""
+    rows = []
+
+    for _, r in load_price_alert_history(conn, limit=limit).iterrows():
+        direction = {"price_above": "crossed above", "price_below": "crossed below"}.get(r["alert_type"], r["alert_type"])
+        rows.append({
+            "timestamp": r["triggered_at"], "type": "Price Alert", "ticker": r["ticker"],
+            "description": f"{r['ticker']} {direction} ${r['threshold']:,.2f} (price ${r['price']:,.2f})",
+            "email_status": _channel_status(r["dry_run"], r["delivered"], r["delivery_error"]),
+            "discord_status": _channel_status(r["dry_run"], r["discord_delivered"], r["discord_delivery_error"]),
+        })
+
+    for _, r in load_volatility_alert_history(conn, limit=limit).iterrows():
+        rows.append({
+            "timestamp": r["triggered_at"], "type": "Volatility Alert", "ticker": r["ticker"],
+            "description": f"{r['ticker']} moved {r['move_pct']:+.2f}% (threshold ±{r['threshold_percent']:.2f}%)",
+            "email_status": _channel_status(r["dry_run"], r["delivered"], r["delivery_error"]),
+            "discord_status": _channel_status(r["dry_run"], r["discord_delivered"], r["discord_delivery_error"]),
+        })
+
+    for _, r in load_digest_log(conn, limit=limit).iterrows():
+        rows.append({
+            "timestamp": r["sent_at"], "type": "Daily Digest", "ticker": None,
+            "description": f"Digest covering {r['ticker_count']} ticker(s)",
+            "email_status": _channel_status(r["dry_run"], r["delivered"], r["delivery_error"]),
+            "discord_status": _channel_status(r["dry_run"], r["discord_delivered"], r["discord_delivery_error"]),
+        })
+
+    for _, r in load_operational_notifications(conn, limit=limit).iterrows():
+        rows.append({
+            "timestamp": r["sent_at"], "type": "Operational Failure", "ticker": None,
+            "description": r["error_summary"],
+            "email_status": _channel_status(False, r["email_delivered"], r["email_error"]),
+            "discord_status": _channel_status(False, r["discord_delivered"], r["discord_error"]),
+        })
+
+    for _, r in load_alert_test_log(conn, limit=limit).iterrows():
+        rows.append({
+            "timestamp": r["sent_at"], "type": _TEST_LOG_TYPE_LABELS.get(r["alert_type"], f"Test Send: {r['alert_type']}"),
+            "ticker": None, "description": "Manual test send from the dashboard - sample data only",
+            "email_status": _channel_status(False, r["email_delivered"], r["email_error"]),
+            "discord_status": _channel_status(False, r["discord_delivered"], r["discord_error"]),
+        })
+
+    feed = pd.DataFrame(rows, columns=ALERT_ACTIVITY_COLUMNS)
+    if feed.empty:
+        return feed
+    feed["timestamp"] = pd.to_datetime(feed["timestamp"])
+    return feed.sort_values("timestamp", ascending=False).reset_index(drop=True)
+
+
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_alert_activity_feed(limit: int = 500) -> pd.DataFrame:
+    with db_session() as conn:
+        return _load_alert_activity_feed(conn, limit=limit)
 
 
 @st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
@@ -826,6 +941,7 @@ def clear_all_caches():
     get_volatility_alert_history.clear()
     get_daily_digest_enabled.clear()
     get_daily_digest_log.clear()
+    get_alert_activity_feed.clear()
     get_run_history.clear()
     get_paper_portfolio.clear()
     get_paper_order_history.clear()

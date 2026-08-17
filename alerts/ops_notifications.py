@@ -136,7 +136,11 @@ def send_operational_failure_notification(
             logger.error("operational notification Discord delivery failed: %s", type(e).__name__)
             discord_error = type(e).__name__
 
-    record_sent(conn, trading_date, sanitize_error_summary(error_summary))
+    record_sent(
+        conn, trading_date, sanitize_error_summary(error_summary),
+        email_delivered=email_sent, email_error=email_error,
+        discord_delivered=discord_sent, discord_error=discord_error,
+    )
 
     sent = email_sent or discord_sent
     reason = "delivered" if sent else "delivery failed on both channels"

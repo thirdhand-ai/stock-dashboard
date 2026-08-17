@@ -246,24 +246,39 @@ def test_send_functions_accept_no_database_connection_argument():
 # --- dashboard/data.py wrappers: never open a DB session either ---
 
 
-def test_dashboard_wrappers_never_open_a_db_session():
-    """dashboard/data.py's send_*_test_notification wrappers must not call
-    db_session() at all - proven by making db_session raise if invoked,
-    and confirming the wrapper still succeeds."""
+def test_dashboard_wrappers_only_write_to_alert_test_log():
+    """dashboard/data.py's send_*_test_notification wrappers persist the
+    delivery outcome AFTER the fact, for the Alert Activity feed
+    (dashboard/views/alert_activity.py) - but only to the dedicated
+    alert_test_log table (db/alert_test_log_repository.py), proven by
+    seeding a real test DB with existing price_alert_state/
+    volatility_alert_state/daily_digest_log rows and confirming they are
+    byte-identical after all three wrappers run, while alert_test_log
+    gains exactly three new rows with the correct alert_type."""
     import dashboard.data as dashboard_data
+    from db.alert_test_log_repository import load_alert_test_log
 
-    def _explode(*args, **kwargs):
-        raise AssertionError("db_session() must never be called by a test-send wrapper")
+    conn = make_seeded_db()
+    before = {
+        t: _snapshot(conn, t) for t in ["price_alert_state", "volatility_alert_state", "daily_digest_log"]
+    }
 
-    with patch("dashboard.data.db_session", side_effect=_explode), \
-         patch("alerts.email.smtplib.SMTP") as mock_smtp, \
+    with patch("dashboard.data.db_session") as mock_db_session, \
+         patch("alerts.email.smtplib.SMTP"), \
          patch("alerts.email.SMTP_HOST", None), \
-         patch("alerts.discord.requests.post") as mock_post, \
+         patch("alerts.discord.requests.post"), \
          patch("alerts.discord.DISCORD_WEBHOOK_URL", None):
-        price_result = dashboard_data.send_price_alert_test_notification()
-        volatility_result = dashboard_data.send_volatility_alert_test_notification()
-        digest_result = dashboard_data.send_daily_digest_test_notification()
+        mock_db_session.return_value.__enter__.return_value = conn
+        mock_db_session.return_value.__exit__.return_value = False
+        dashboard_data.send_price_alert_test_notification()
+        dashboard_data.send_volatility_alert_test_notification()
+        dashboard_data.send_daily_digest_test_notification()
 
-    assert price_result.any_ok is False  # unconfigured in this test - fails safe, but reaches here without raising
-    assert volatility_result.any_ok is False
-    assert digest_result.any_ok is False
+    after = {
+        t: _snapshot(conn, t) for t in ["price_alert_state", "volatility_alert_state", "daily_digest_log"]
+    }
+    assert after == before
+
+    test_log = load_alert_test_log(conn)
+    assert len(test_log) == 3
+    assert set(test_log["alert_type"]) == {"price_alert", "volatility_alert", "daily_digest"}
