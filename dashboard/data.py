@@ -694,6 +694,58 @@ def get_real_holdings_view() -> List:
 
 
 @st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_dividend_summary() -> List:
+    """Per-(ticker, owner) trailing-12-month yield on cost and running
+    totals - see trading/dividends.py's docstring: a holding with no
+    recorded payments simply doesn't appear, and one with unknown cost
+    basis (needs_manual_entry) gets None yield rather than a fabricated
+    figure."""
+    from trading.dividends import build_dividend_summary
+    with db_session() as conn:
+        return build_dividend_summary(conn)
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_dividend_payments(ticker: Optional[str] = None, owner: Optional[str] = None) -> List:
+    """Raw payment history, oldest first - see db/dividend_payments_repository.py."""
+    from db.dividend_payments_repository import list_dividend_payments
+    with db_session() as conn:
+        return list_dividend_payments(conn, ticker=ticker, owner=owner)
+
+
+def add_dividend_payment_entry(
+    ticker: str,
+    owner: Optional[str],
+    pay_date: str,
+    amount_per_share: float,
+    total_received: float,
+    reinvested: bool = False,
+    note: Optional[str] = None,
+) -> None:
+    """Explicit, user-triggered write from dashboard/views/dividend_income.py's
+    entry form - never called on page load. Manual entry only (asked and
+    confirmed) - see db/dividend_payments_schema.py's docstring."""
+    from db.dividend_payments_repository import add_dividend_payment
+    with db_session() as conn:
+        add_dividend_payment(
+            conn, ticker=ticker, owner=owner, pay_date=pay_date, amount_per_share=amount_per_share,
+            total_received=total_received, reinvested=reinvested, note=note,
+        )
+    get_dividend_summary.clear()
+    get_dividend_payments.clear()
+
+
+def delete_dividend_payment_entry(payment_id: int) -> None:
+    """Explicit, user-triggered write from dashboard/views/dividend_income.py's
+    payment log delete control - never called on page load."""
+    from db.dividend_payments_repository import delete_dividend_payment
+    with db_session() as conn:
+        delete_dividend_payment(conn, payment_id)
+    get_dividend_summary.clear()
+    get_dividend_payments.clear()
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
 def get_paper_equity_curve() -> pd.DataFrame:
     with db_session() as conn:
         return trading_portfolio.get_equity_curve(conn)
