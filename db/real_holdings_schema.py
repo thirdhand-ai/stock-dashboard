@@ -29,6 +29,22 @@ gain/loss. `realized_gain` is a plain dollar amount from any partial sale
 (e.g. shares sold at a gain while some of the original lot is still held)
 - entered directly, not derived, since this system never observed the
 actual trade.
+
+`share_history_caveat` is nullable free text, set only when this
+holding's CURRENT share count is known to have changed over time at an
+UNDATED point (e.g. KMI/HPI's ongoing DRIP reinvestment growth - no
+dividend_payments rows exist with dates precise enough to reconstruct
+when each share was added). trading/portfolio_history.py's historical
+value chart applies today's share count across a ticker's full stored
+price history (the best available estimate, absent dated events) but
+flags any ticker with this set as approximate rather than presenting a
+precise-looking line - the same "never fabricate, flag the gap" rule
+needs_manual_entry already follows. A ticker whose only share-count
+change is a partial SALE (e.g. META) doesn't need this field - that's
+detected automatically from a realized_sales row with sale_date IS NULL,
+since that's already a structured, dated table; this field exists only
+for the growth case (DRIP), which no structured/dated table currently
+captures at all.
 """
 CREATE_REAL_HOLDINGS_TABLE = """
 CREATE TABLE IF NOT EXISTS real_holdings (
@@ -40,6 +56,7 @@ CREATE TABLE IF NOT EXISTS real_holdings (
     realized_gain REAL NOT NULL DEFAULT 0,
     needs_manual_entry INTEGER NOT NULL DEFAULT 0,
     note TEXT,
+    share_history_caveat TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -48,6 +65,20 @@ CREATE TABLE IF NOT EXISTS real_holdings (
 CREATE_REAL_HOLDINGS_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_real_holdings_ticker_owner ON real_holdings(ticker, owner);
 """
+
+
+def _migrate_add_share_history_caveat_column(conn) -> None:
+    """Additive: real_holdings gets share_history_caveat for holdings whose
+    current share count reflects undated growth (DRIP) this system can't
+    reconstruct precisely - see this module's docstring. A pre-existing
+    DB's `CREATE TABLE IF NOT EXISTS` won't add a column to an
+    already-created table. Pre-existing rows get NULL - never backfilled
+    with a guess, same convention as every other additive migration in
+    this codebase (e.g. db/price_alerts_schema.py's suppressed_reason)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(real_holdings)").fetchall()}
+    if "share_history_caveat" not in cols:
+        conn.execute("ALTER TABLE real_holdings ADD COLUMN share_history_caveat TEXT")
+        conn.commit()
 
 
 def _migrate_ticker_only_unique_index_to_ticker_owner(conn) -> None:
@@ -74,3 +105,4 @@ def ensure_real_holdings_schema(conn) -> None:
     _migrate_ticker_only_unique_index_to_ticker_owner(conn)
     conn.execute(CREATE_REAL_HOLDINGS_INDEX)
     conn.commit()
+    _migrate_add_share_history_caveat_column(conn)

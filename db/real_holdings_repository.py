@@ -20,6 +20,7 @@ class RealHolding:
     realized_gain: float
     needs_manual_entry: bool
     note: Optional[str]
+    share_history_caveat: Optional[str]
 
 
 def _normalize_owner(owner: Optional[str]) -> str:
@@ -36,7 +37,11 @@ def _row_to_holding(row) -> RealHolding:
         ticker=row["ticker"], owner=row["owner"], shares=row["shares"],
         cost_basis_total=row["cost_basis_total"], realized_gain=row["realized_gain"],
         needs_manual_entry=bool(row["needs_manual_entry"]), note=row["note"],
+        share_history_caveat=row["share_history_caveat"],
     )
+
+
+SELECT_COLUMNS = "ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note, share_history_caveat"
 
 
 def list_real_holdings(conn) -> List[RealHolding]:
@@ -46,8 +51,7 @@ def list_real_holdings(conn) -> List[RealHolding]:
     callers decide how to display those, this just returns what's stored."""
     ensure_real_holdings_schema(conn)
     rows = conn.execute(
-        "SELECT ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note "
-        "FROM real_holdings ORDER BY ticker, owner"
+        f"SELECT {SELECT_COLUMNS} FROM real_holdings ORDER BY ticker, owner"
     ).fetchall()
     return [_row_to_holding(row) for row in rows]
 
@@ -61,14 +65,12 @@ def get_real_holding(conn, ticker: str, owner: Optional[str] = None) -> Optional
     ensure_real_holdings_schema(conn)
     if owner is not None:
         row = conn.execute(
-            "SELECT ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note "
-            "FROM real_holdings WHERE ticker = ? AND owner = ?",
+            f"SELECT {SELECT_COLUMNS} FROM real_holdings WHERE ticker = ? AND owner = ?",
             (ticker, _normalize_owner(owner)),
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note "
-            "FROM real_holdings WHERE ticker = ?",
+            f"SELECT {SELECT_COLUMNS} FROM real_holdings WHERE ticker = ?",
             (ticker,),
         ).fetchone()
     return _row_to_holding(row) if row is not None else None
@@ -83,6 +85,7 @@ def upsert_real_holding(
     realized_gain: float = 0.0,
     needs_manual_entry: bool = False,
     note: Optional[str] = None,
+    share_history_caveat: Optional[str] = None,
 ) -> None:
     """Add a new (ticker, owner) holding, or overwrite an existing one's -
     the same operation handles both add and edit, same pattern
@@ -90,19 +93,25 @@ def upsert_real_holding(
     The same ticker can have more than one row as long as `owner` differs
     (e.g. NOW: separate rows for Tyler's mother's lot and Tyler's own) -
     omitting `owner` (or passing None) targets the '' "not yet assigned"
-    row for that ticker, same as always calling this without an owner."""
+    row for that ticker, same as always calling this without an owner.
+
+    Full-overwrite semantics, same as every other field here (e.g. `note`):
+    omitting `share_history_caveat` on a later upsert clears it, it does
+    not preserve whatever was set before - pass it explicitly every time
+    you want it to stick."""
     ensure_real_holdings_schema(conn)
     owner = _normalize_owner(owner)
     conn.execute(
         """
-        INSERT INTO real_holdings (ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO real_holdings (ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note, share_history_caveat, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(ticker, owner) DO UPDATE SET
             shares = excluded.shares, cost_basis_total = excluded.cost_basis_total,
             realized_gain = excluded.realized_gain, needs_manual_entry = excluded.needs_manual_entry,
-            note = excluded.note, updated_at = excluded.updated_at
+            note = excluded.note, share_history_caveat = excluded.share_history_caveat,
+            updated_at = excluded.updated_at
         """,
-        (ticker, owner, shares, cost_basis_total, realized_gain, int(needs_manual_entry), note),
+        (ticker, owner, shares, cost_basis_total, realized_gain, int(needs_manual_entry), note, share_history_caveat),
     )
     conn.commit()
 

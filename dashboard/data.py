@@ -765,6 +765,20 @@ def get_concentration_reports() -> dict:
 
 
 @st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_portfolio_value_series_by_scope() -> dict:
+    """Combined + per-owner historical portfolio value series - see
+    trading/portfolio_history.py's docstring: a holding with no dated
+    share-count-change events uses its current share count across its
+    full stored price history (the best available estimate), flagged as
+    approximate for any holding known to have changed at an undated point
+    (DRIP growth, an undated partial sale); a holding with no shares on
+    record at all is excluded entirely, never estimated."""
+    from trading.portfolio_history import build_portfolio_value_series_by_scope
+    with db_session() as conn:
+        return build_portfolio_value_series_by_scope(conn)
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
 def get_realized_gains_report() -> List:
     """Per-transaction realized gain/loss detail for real_holdings sales -
     see trading/realized_gains.py's docstring: a transaction missing a
