@@ -2,7 +2,7 @@
 import pandas as pd
 import streamlit as st
 
-from config.settings import WATCHLIST
+from config.settings import SIGNAL_COVERAGE_TICKERS
 from dashboard import components
 from dashboard.charts import build_ticker_chart
 from dashboard.data import get_ticker_detail
@@ -17,9 +17,9 @@ def _format_values(values: dict) -> str:
 def render():
     st.title("Ticker Detail")
 
-    if st.session_state.get("selected_ticker") not in WATCHLIST:
-        st.session_state["selected_ticker"] = WATCHLIST[0]
-    ticker = st.selectbox("Ticker", WATCHLIST, key="selected_ticker")
+    if st.session_state.get("selected_ticker") not in SIGNAL_COVERAGE_TICKERS:
+        st.session_state["selected_ticker"] = SIGNAL_COVERAGE_TICKERS[0]
+    ticker = st.selectbox("Ticker", SIGNAL_COVERAGE_TICKERS, key="selected_ticker")
 
     detail = get_ticker_detail(ticker)
     if not detail.ok:

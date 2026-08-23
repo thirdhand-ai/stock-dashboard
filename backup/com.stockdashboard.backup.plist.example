@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd template for the daily database backup - NOT installed or
+  loaded by anything in this repo. This file is inert until you copy it
+  into ~/Library/LaunchAgents/ and run `launchctl load` yourself (see
+  backup/README.md for the exact steps) - same convention deploy/
+  com.stockdashboard.dailyrun.plist.example uses for the daily automation
+  run (this template lives in backup/ rather than deploy/ since deploy/ is
+  a frozen directory this project never edits from an application phase -
+  see tests/test_ops_prospective_audit_phase16.py's frozen/forbidden-path
+  guard).
+
+  Unlike the daily automation run, this has no Weekday restriction - it
+  fires every day (including weekends/holidays), since data/stock_dashboard.db
+  can change from manual dashboard edits on any day, not just trading days.
+
+  Before use: replace every /Users/tylertyson/stock-dashboard path below
+  with your actual project path, and confirm your Mac's system timezone
+  (launchd fires StartCalendarInterval in the system's local time).
+
+  This only ever reads data/stock_dashboard.db (via backup/db_backup.py's
+  SQLite Online Backup API call) and writes new files under
+  data/backups/ - it never modifies the live database.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.stockdashboard.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tylertyson/stock-dashboard/venv/bin/python</string>
+        <string>-m</string>
+        <string>backup.run_backup</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tylertyson/stock-dashboard</string>
+
+    <!-- Fires daily at 03:00 local time - quiet hours, after any evening
+         dashboard activity and well before automation.run_daily's 16:30
+         weekday run. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tylertyson/stock-dashboard/logs/backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tylertyson/stock-dashboard/logs/backup.log</string>
+</dict>
+</plist>

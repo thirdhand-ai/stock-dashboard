@@ -6,7 +6,7 @@ import sqlite3
 
 from db.real_holdings_repository import upsert_real_holding
 from db.schema import init_db
-from trading.real_holdings import build_real_holdings_view, portfolio_totals
+from trading.real_holdings import build_real_holdings_view, portfolio_totals, subtotals_by_owner
 
 
 def make_test_db():
@@ -117,3 +117,49 @@ def test_portfolio_totals_sums_across_positions_and_counts_manual_entry():
     assert totals["total_unrealized_pl"] == 2000.0
     assert totals["total_realized_gain"] == 500.0
     assert totals["positions_needing_manual_entry"] == 1
+
+
+def test_subtotals_by_owner_groups_and_sums_independently_per_owner():
+    conn = make_test_db()
+    insert_price_row(conn, "AAA", "2026-08-14", 100.0)
+    insert_price_row(conn, "BBB", "2026-08-14", 50.0)
+    upsert_real_holding(conn, "AAA", owner="Mom", shares=100.0, cost_basis_total=8000.0)
+    upsert_real_holding(conn, "BBB", owner="Tyler", shares=10.0, cost_basis_total=400.0)
+
+    subtotals = subtotals_by_owner(build_real_holdings_view(conn))
+
+    assert set(subtotals) == {"Mom", "Tyler"}
+    assert subtotals["Mom"]["total_market_value"] == 10000.0
+    assert subtotals["Mom"]["total_unrealized_pl"] == 2000.0
+    assert subtotals["Tyler"]["total_market_value"] == 500.0
+    assert subtotals["Tyler"]["total_unrealized_pl"] == 100.0
+
+
+def test_subtotals_by_owner_sum_to_the_combined_total():
+    conn = make_test_db()
+    insert_price_row(conn, "AAA", "2026-08-14", 100.0)
+    insert_price_row(conn, "BBB", "2026-08-14", 50.0)
+    upsert_real_holding(conn, "AAA", owner="Mom", shares=100.0, cost_basis_total=8000.0)
+    upsert_real_holding(conn, "BBB", owner="Tyler", shares=10.0, cost_basis_total=400.0)
+
+    views = build_real_holdings_view(conn)
+    combined = portfolio_totals(views)
+    subtotals = subtotals_by_owner(views)
+
+    summed_market_value = sum(s["total_market_value"] for s in subtotals.values())
+    assert summed_market_value == combined["total_market_value"]
+
+
+def test_subtotals_by_owner_groups_a_multi_owner_ticker_separately():
+    """Same ticker (NOW), two owners - subtotals_by_owner must keep them in
+    separate buckets, not merge them because the ticker matches."""
+    conn = make_test_db()
+    insert_price_row(conn, "NOW", "2026-08-14", 128.48)
+    upsert_real_holding(conn, "NOW", owner="Mom", shares=150.0, cost_basis_total=15300.0)
+    upsert_real_holding(conn, "NOW", owner="Tyler", needs_manual_entry=True)
+
+    subtotals = subtotals_by_owner(build_real_holdings_view(conn))
+
+    assert subtotals["Mom"]["total_market_value"] == 128.48 * 150.0
+    assert subtotals["Tyler"]["total_market_value"] == 0.0
+    assert subtotals["Tyler"]["positions_needing_manual_entry"] == 1

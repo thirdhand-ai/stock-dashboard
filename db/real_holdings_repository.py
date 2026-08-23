@@ -22,6 +22,15 @@ class RealHolding:
     note: Optional[str]
 
 
+def _normalize_owner(owner: Optional[str]) -> str:
+    """'' is this table's "not yet assigned" value, never NULL - see
+    db/real_holdings_schema.py's docstring for why (SQLite treats every
+    NULL as distinct from every other NULL in a UNIQUE index, which would
+    silently defeat (ticker, owner) uniqueness). Every read/write path in
+    this module goes through this so the convention can't drift."""
+    return owner or ""
+
+
 def _row_to_holding(row) -> RealHolding:
     return RealHolding(
         ticker=row["ticker"], owner=row["owner"], shares=row["shares"],
@@ -31,24 +40,37 @@ def _row_to_holding(row) -> RealHolding:
 
 
 def list_real_holdings(conn) -> List[RealHolding]:
-    """All tracked real holdings, ticker-ascending. Includes positions
-    flagged needs_manual_entry (shares/cost_basis_total NULL) - callers
-    decide how to display those, this just returns what's stored."""
+    """All tracked real holdings, ticker-ascending (then owner, so a
+    multi-owner ticker's rows sit together in a stable order). Includes
+    positions flagged needs_manual_entry (shares/cost_basis_total NULL) -
+    callers decide how to display those, this just returns what's stored."""
     ensure_real_holdings_schema(conn)
     rows = conn.execute(
         "SELECT ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note "
-        "FROM real_holdings ORDER BY ticker"
+        "FROM real_holdings ORDER BY ticker, owner"
     ).fetchall()
     return [_row_to_holding(row) for row in rows]
 
 
-def get_real_holding(conn, ticker: str) -> Optional[RealHolding]:
+def get_real_holding(conn, ticker: str, owner: Optional[str] = None) -> Optional[RealHolding]:
+    """A single holding by ticker, optionally narrowed to one owner. Pass
+    `owner` whenever the ticker might have more than one row (e.g. NOW) -
+    without it, this returns whichever matching row SQLite happens to
+    return first, which is only safe for a ticker known to have exactly
+    one row."""
     ensure_real_holdings_schema(conn)
-    row = conn.execute(
-        "SELECT ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note "
-        "FROM real_holdings WHERE ticker = ?",
-        (ticker,),
-    ).fetchone()
+    if owner is not None:
+        row = conn.execute(
+            "SELECT ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note "
+            "FROM real_holdings WHERE ticker = ? AND owner = ?",
+            (ticker, _normalize_owner(owner)),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note "
+            "FROM real_holdings WHERE ticker = ?",
+            (ticker,),
+        ).fetchone()
     return _row_to_holding(row) if row is not None else None
 
 
@@ -62,16 +84,21 @@ def upsert_real_holding(
     needs_manual_entry: bool = False,
     note: Optional[str] = None,
 ) -> None:
-    """Add a new ticker's holding, or overwrite an existing one's - single-
-    row-per-ticker, so add and edit are the same operation, same pattern
-    db/price_alert_config_repository.py::upsert_price_alert_config uses."""
+    """Add a new (ticker, owner) holding, or overwrite an existing one's -
+    the same operation handles both add and edit, same pattern
+    db/price_alert_config_repository.py::upsert_price_alert_config uses.
+    The same ticker can have more than one row as long as `owner` differs
+    (e.g. NOW: separate rows for Tyler's mother's lot and Tyler's own) -
+    omitting `owner` (or passing None) targets the '' "not yet assigned"
+    row for that ticker, same as always calling this without an owner."""
     ensure_real_holdings_schema(conn)
+    owner = _normalize_owner(owner)
     conn.execute(
         """
         INSERT INTO real_holdings (ticker, owner, shares, cost_basis_total, realized_gain, needs_manual_entry, note, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(ticker) DO UPDATE SET
-            owner = excluded.owner, shares = excluded.shares, cost_basis_total = excluded.cost_basis_total,
+        ON CONFLICT(ticker, owner) DO UPDATE SET
+            shares = excluded.shares, cost_basis_total = excluded.cost_basis_total,
             realized_gain = excluded.realized_gain, needs_manual_entry = excluded.needs_manual_entry,
             note = excluded.note, updated_at = excluded.updated_at
         """,
@@ -80,7 +107,17 @@ def upsert_real_holding(
     conn.commit()
 
 
-def delete_real_holding(conn, ticker: str) -> None:
+def delete_real_holding(conn, ticker: str, owner: Optional[str] = None) -> None:
+    """Remove a holding. Pass `owner` to remove just that one row; omit it
+    to remove every row for that ticker (all owners) - a deliberate
+    "remove this ticker entirely" operation, not the default path for a
+    ticker known to have more than one owner."""
     ensure_real_holdings_schema(conn)
-    conn.execute("DELETE FROM real_holdings WHERE ticker = ?", (ticker,))
+    if owner is not None:
+        conn.execute(
+            "DELETE FROM real_holdings WHERE ticker = ? AND owner = ?",
+            (ticker, _normalize_owner(owner)),
+        )
+    else:
+        conn.execute("DELETE FROM real_holdings WHERE ticker = ?", (ticker,))
     conn.commit()

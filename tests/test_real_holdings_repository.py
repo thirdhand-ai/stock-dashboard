@@ -88,3 +88,52 @@ def test_delete_real_holding_removes_it():
     delete_real_holding(conn, "AAA")
 
     assert get_real_holding(conn, "AAA") is None
+
+
+def test_same_ticker_can_have_two_owners_as_separate_rows():
+    conn = make_test_db()
+    upsert_real_holding(conn, "NOW", owner="Mom", shares=150.0, cost_basis_total=15300.0)
+    upsert_real_holding(conn, "NOW", owner="Tyler", needs_manual_entry=True)
+
+    rows = [h for h in list_real_holdings(conn) if h.ticker == "NOW"]
+    assert len(rows) == 2
+    by_owner = {h.owner: h for h in rows}
+    assert by_owner["Mom"].shares == 150.0
+    assert by_owner["Tyler"].needs_manual_entry is True
+    assert by_owner["Tyler"].shares is None
+
+
+def test_upsert_with_same_ticker_and_owner_overwrites_that_owners_row_only():
+    conn = make_test_db()
+    upsert_real_holding(conn, "NOW", owner="Mom", shares=150.0, cost_basis_total=15300.0)
+    upsert_real_holding(conn, "NOW", owner="Tyler", needs_manual_entry=True)
+
+    upsert_real_holding(conn, "NOW", owner="Mom", shares=160.0, cost_basis_total=16320.0)
+
+    rows = [h for h in list_real_holdings(conn) if h.ticker == "NOW"]
+    assert len(rows) == 2
+    by_owner = {h.owner: h for h in rows}
+    assert by_owner["Mom"].shares == 160.0
+    assert by_owner["Tyler"].needs_manual_entry is True  # untouched by the Mom-only upsert
+
+
+def test_get_real_holding_with_owner_disambiguates_a_multi_owner_ticker():
+    conn = make_test_db()
+    upsert_real_holding(conn, "NOW", owner="Mom", shares=150.0, cost_basis_total=15300.0)
+    upsert_real_holding(conn, "NOW", owner="Tyler", needs_manual_entry=True)
+
+    assert get_real_holding(conn, "NOW", owner="Mom").shares == 150.0
+    assert get_real_holding(conn, "NOW", owner="Tyler").needs_manual_entry is True
+    assert get_real_holding(conn, "NOW", owner="Nobody") is None
+
+
+def test_delete_real_holding_with_owner_removes_only_that_owners_row():
+    conn = make_test_db()
+    upsert_real_holding(conn, "NOW", owner="Mom", shares=150.0, cost_basis_total=15300.0)
+    upsert_real_holding(conn, "NOW", owner="Tyler", needs_manual_entry=True)
+
+    delete_real_holding(conn, "NOW", owner="Tyler")
+
+    rows = [h for h in list_real_holdings(conn) if h.ticker == "NOW"]
+    assert len(rows) == 1
+    assert rows[0].owner == "Mom"

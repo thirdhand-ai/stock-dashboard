@@ -10,6 +10,7 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 data/*.lock
+data/backups/
 data/research_cache/*.pkl
 logs/*.log
 .pytest_cache/

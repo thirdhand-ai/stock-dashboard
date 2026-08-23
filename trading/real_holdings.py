@@ -11,7 +11,7 @@ with no stored price history gets current_price=None rather than a stale
 or zero placeholder.
 """
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from db.price_repository import load_price_history, resolve_source
 from db.real_holdings_repository import RealHolding, list_real_holdings
@@ -69,9 +69,11 @@ def _price_holding(conn, h: RealHolding) -> RealHoldingView:
 
 
 def build_real_holdings_view(conn) -> List[RealHoldingView]:
-    """One row per tracked ticker, priced against the local `prices` table,
-    with weight_pct filled in as a second pass once every position's
-    market_value is known (needs the portfolio total first)."""
+    """One row per tracked (ticker, owner) pair, priced against the local
+    `prices` table, with weight_pct filled in as a second pass once every
+    position's market_value is known (needs the portfolio total first).
+    weight_pct is of the combined portfolio across all owners - see
+    subtotals_by_owner for a per-owner breakdown."""
     holdings = list_real_holdings(conn)
     views = [_price_holding(conn, h) for h in holdings]
 
@@ -95,3 +97,13 @@ def portfolio_totals(views: List[RealHoldingView]) -> dict:
         "total_realized_gain": sum(v.realized_gain for v in views),
         "positions_needing_manual_entry": sum(1 for v in views if v.needs_manual_entry),
     }
+
+
+def subtotals_by_owner(views: List[RealHoldingView]) -> Dict[str, dict]:
+    """portfolio_totals, grouped by owner - one owner-ascending dict entry
+    per distinct owner present in `views`, each computed by reusing
+    portfolio_totals on that owner's slice (same summation rules, so a
+    per-owner total plus every other owner's total always adds up to the
+    combined total from portfolio_totals(views))."""
+    owners = sorted({v.owner or "" for v in views})
+    return {owner: portfolio_totals([v for v in views if (v.owner or "") == owner]) for owner in owners}

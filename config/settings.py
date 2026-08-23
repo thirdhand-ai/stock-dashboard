@@ -40,6 +40,16 @@ WATCHLIST = [
     "META",
 ]
 
+# Confirmed real holdings (db/real_holdings_repository.py) that get the same
+# technical-indicator/score-stage signal coverage as WATCHLIST tickers on the
+# dashboard (Watchlist page, Ticker Detail page), without joining WATCHLIST
+# itself - WATCHLIST must stay exactly equal to strategy_lab/universe.py's
+# PRODUCTION_WATCHLIST_OVERLAP (see that module's assert_isolated_from_watchlist).
+REAL_HOLDINGS_WITH_SIGNAL_COVERAGE = ["XLV", "NCLH", "KMI", "HPI"]
+
+# Tickers shown with score/stage signal indicators across the dashboard.
+SIGNAL_COVERAGE_TICKERS = WATCHLIST + REAL_HOLDINGS_WITH_SIGNAL_COVERAGE
+
 # --- Data ingestion defaults ---
 YFINANCE_PERIOD = "2y"
 YFINANCE_INTERVAL = "1d"

@@ -1,7 +1,7 @@
 """Watchlist overview: signal confidence + confirmation stage per ticker."""
 import streamlit as st
 
-from config.settings import WATCHLIST
+from config.settings import SIGNAL_COVERAGE_TICKERS
 from dashboard import components
 from dashboard.data import clear_all_caches, get_watchlist_overview
 from dashboard.theme import STATUS_CRITICAL, STATUS_GOOD, TEXT_MUTED
@@ -68,7 +68,7 @@ def render():
             clear_all_caches()
             st.rerun()
 
-    rows = get_watchlist_overview(WATCHLIST)
+    rows = get_watchlist_overview(SIGNAL_COVERAGE_TICKERS)
     available = [r for r in rows if r.ok]
     unavailable = [r for r in rows if not r.ok]
 

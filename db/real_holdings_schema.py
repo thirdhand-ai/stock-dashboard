@@ -10,14 +10,25 @@ tests/test_ops_prospective_audit_phase16.py::
 test_git_diff_never_touches_frozen_or_forbidden_files), lazily created
 here, same convention as every alert table in this codebase.
 
-One row per ticker (UNIQUE). `shares`/`cost_basis_total` are nullable -
-a position whose real quantity or cost basis isn't known yet (e.g.
-awarded shares still needing manual entry) gets `needs_manual_entry=1`
-and NULLs rather than a fabricated number; trading/real_holdings.py shows
-those as "-" instead of a computed gain/loss. `realized_gain` is a plain
-dollar amount from any partial sale (e.g. shares sold at a gain while
-some of the original lot is still held) - entered directly, not derived,
-since this system never observed the actual trade.
+One row per (ticker, owner) pair (UNIQUE) - the same ticker can appear
+more than once if held separately by more than one owner (e.g. NOW: one
+row for Tyler's mother's 150-share lot, a separate row for Tyler's own,
+unconfirmed lot). `owner` is stored as `''` rather than NULL when not yet
+assigned - SQLite treats every NULL as distinct from every other NULL for
+UNIQUE-index purposes, which would silently defeat the (ticker, owner)
+uniqueness constraint for not-yet-assigned rows; `''` behaves like any
+other ordinary value instead. db/real_holdings_repository.py's
+_normalize_owner() is the only place that should ever write to this
+column, so this convention can't drift.
+
+`shares`/`cost_basis_total` are nullable - a position whose real quantity
+or cost basis isn't known yet (e.g. awarded shares still needing manual
+entry) gets `needs_manual_entry=1` and NULLs rather than a fabricated
+number; trading/real_holdings.py shows those as "-" instead of a computed
+gain/loss. `realized_gain` is a plain dollar amount from any partial sale
+(e.g. shares sold at a gain while some of the original lot is still held)
+- entered directly, not derived, since this system never observed the
+actual trade.
 """
 CREATE_REAL_HOLDINGS_TABLE = """
 CREATE TABLE IF NOT EXISTS real_holdings (
@@ -35,13 +46,31 @@ CREATE TABLE IF NOT EXISTS real_holdings (
 """
 
 CREATE_REAL_HOLDINGS_INDEX = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_real_holdings_ticker ON real_holdings(ticker);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_real_holdings_ticker_owner ON real_holdings(ticker, owner);
 """
+
+
+def _migrate_ticker_only_unique_index_to_ticker_owner(conn) -> None:
+    """Additive/corrective: earlier versions of this table had a UNIQUE
+    index on `ticker` alone (one row per ticker, full stop), which cannot
+    represent the same ticker split across two owners. Backfills any
+    NULL owner to '' first (see this module's docstring for why - a
+    pre-existing DB always has exactly one row per ticker at this point,
+    so this backfill can never create a (ticker, owner) collision), then
+    drops the old ticker-only index if present. CREATE_REAL_HOLDINGS_INDEX
+    (called right after this, in ensure_real_holdings_schema) creates the
+    new compound index. Idempotent - DROP INDEX IF EXISTS is a no-op once
+    already migrated."""
+    conn.execute("UPDATE real_holdings SET owner = '' WHERE owner IS NULL")
+    conn.execute("DROP INDEX IF EXISTS idx_real_holdings_ticker")
+    conn.commit()
 
 
 def ensure_real_holdings_schema(conn) -> None:
     """Idempotent - safe to call on every read/write, same convention as
     db/price_alerts_schema.py::ensure_price_alerts_schema."""
     conn.execute(CREATE_REAL_HOLDINGS_TABLE)
+    conn.commit()
+    _migrate_ticker_only_unique_index_to_ticker_owner(conn)
     conn.execute(CREATE_REAL_HOLDINGS_INDEX)
     conn.commit()
