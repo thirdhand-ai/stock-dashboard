@@ -765,6 +765,48 @@ def get_concentration_reports() -> dict:
 
 
 @st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_realized_gains_report() -> List:
+    """Per-transaction realized gain/loss detail for real_holdings sales -
+    see trading/realized_gains.py's docstring: a transaction missing a
+    purchase or sale date gets an Unknown term/tax-year rather than a
+    guessed classification."""
+    from trading.realized_gains import build_realized_gains_report
+    with db_session() as conn:
+        return build_realized_gains_report(conn)
+
+
+def add_realized_sale_entry(
+    ticker: str,
+    owner: Optional[str],
+    purchase_date: Optional[str],
+    sale_date: Optional[str],
+    shares_sold: float,
+    cost_basis_sold: float,
+    proceeds: float,
+    note: Optional[str] = None,
+) -> None:
+    """Explicit, user-triggered write from dashboard/views/realized_gains.py's
+    entry form - never called on page load. purchase_date/sale_date may be
+    None (left unknown) - see db/realized_sales_schema.py's docstring."""
+    from db.realized_sales_repository import add_realized_sale
+    with db_session() as conn:
+        add_realized_sale(
+            conn, ticker=ticker, owner=owner, purchase_date=purchase_date, sale_date=sale_date,
+            shares_sold=shares_sold, cost_basis_sold=cost_basis_sold, proceeds=proceeds, note=note,
+        )
+    get_realized_gains_report.clear()
+
+
+def delete_realized_sale_entry(sale_id: int) -> None:
+    """Explicit, user-triggered write from dashboard/views/realized_gains.py's
+    transaction log delete control - never called on page load."""
+    from db.realized_sales_repository import delete_realized_sale
+    with db_session() as conn:
+        delete_realized_sale(conn, sale_id)
+    get_realized_gains_report.clear()
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
 def get_paper_equity_curve() -> pd.DataFrame:
     with db_session() as conn:
         return trading_portfolio.get_equity_curve(conn)
