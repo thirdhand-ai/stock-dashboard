@@ -746,6 +746,25 @@ def delete_dividend_payment_entry(payment_id: int) -> None:
 
 
 @st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_concentration_reports() -> dict:
+    """Combined + per-owner position-size and sector/industry concentration
+    reports for real_holdings - see trading/concentration.py's docstring.
+    Populates any missing ticker_sector rows (one-time Finnhub lookup per
+    ticker, cached indefinitely) before building the reports, so the first
+    load after a new ticker is added may take a moment longer than
+    subsequent cached loads."""
+    from trading.concentration import build_concentration_reports, ensure_sector_data
+    from trading.real_holdings import build_real_holdings_view
+    from db.ticker_sector_repository import list_ticker_sectors
+
+    with db_session() as conn:
+        views = build_real_holdings_view(conn)
+        ensure_sector_data(conn, [v.ticker for v in views])
+        sector_by_ticker = {s.ticker: s.industry for s in list_ticker_sectors(conn)}
+        return build_concentration_reports(views, sector_by_ticker)
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
 def get_paper_equity_curve() -> pd.DataFrame:
     with db_session() as conn:
         return trading_portfolio.get_equity_curve(conn)

@@ -60,6 +60,19 @@ def fetch_fundamentals(ticker):
     return (data or {}).get("metric", {})
 
 
+def fetch_company_industry(ticker):
+    """A single broad industry classification (e.g. "Technology") from
+    Finnhub's company_profile2 endpoint - used by trading/concentration.py
+    for the Portfolio Concentration page's sector/industry allocation.
+    This account's Finnhub plan returns only finnhubIndustry, not a full
+    GICS sector+industry breakdown (checked live before building on it) -
+    returns None rather than fabricating a classification if Finnhub has
+    none for this ticker."""
+    client = get_client()
+    profile = client.company_profile2(symbol=ticker)
+    return (profile or {}).get("finnhubIndustry") or None
+
+
 def fetch_next_earnings_date(ticker, lookahead_days=120):
     """Nearest upcoming earnings date within the lookahead window, or None
     if Finnhub has nothing scheduled. Used by research/fundamentals.py
