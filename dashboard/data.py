@@ -765,6 +765,17 @@ def get_concentration_reports() -> dict:
 
 
 @st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_data_completeness_report():
+    """Read-only aggregation of every gap already flagged in real_holdings/
+    realized_sales/dividend_payments - see trading/data_completeness.py's
+    docstring. Invents no new flag types, just collects what each source
+    table already marks as needs_manual_entry/unknown/approximate."""
+    from trading.data_completeness import build_data_completeness_report
+    with db_session() as conn:
+        return build_data_completeness_report(conn)
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
 def get_portfolio_value_series_by_scope() -> dict:
     """Combined + per-owner historical portfolio value series - see
     trading/portfolio_history.py's docstring: a holding with no dated
