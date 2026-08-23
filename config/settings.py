@@ -47,8 +47,21 @@ WATCHLIST = [
 # PRODUCTION_WATCHLIST_OVERLAP (see that module's assert_isolated_from_watchlist).
 REAL_HOLDINGS_WITH_SIGNAL_COVERAGE = ["XLV", "NCLH", "KMI", "HPI"]
 
+# Exploratory/research tracking tickers - NOT real holdings and NOT part of
+# the production WATCHLIST (same isolation-from-WATCHLIST reasoning as
+# REAL_HOLDINGS_WITH_SIGNAL_COVERAGE above). These get the same score/stage
+# signal-engine coverage as WATCHLIST tickers on the dashboard purely for
+# research/monitoring purposes - no position is held in any of them. GOOGL
+# and AMZN were requested alongside this list but are already core WATCHLIST
+# tickers with full coverage, so they're intentionally left out here rather
+# than duplicated.
+EXPLORATORY_WATCHLIST = [
+    "AVGO", "TSM", "AMD", "MU", "ALAB", "ANET", "ASML", "PLTR",
+    "SNOW", "NXPI", "SNPS", "IBM", "APP",
+]
+
 # Tickers shown with score/stage signal indicators across the dashboard.
-SIGNAL_COVERAGE_TICKERS = WATCHLIST + REAL_HOLDINGS_WITH_SIGNAL_COVERAGE
+SIGNAL_COVERAGE_TICKERS = WATCHLIST + REAL_HOLDINGS_WITH_SIGNAL_COVERAGE + EXPLORATORY_WATCHLIST
 
 # --- Data ingestion defaults ---
 YFINANCE_PERIOD = "2y"
