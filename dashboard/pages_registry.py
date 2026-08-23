@@ -7,9 +7,10 @@ every view to build its Page objects.
 """
 import streamlit as st
 
-from dashboard.views import alert_activity, alert_history, backtest_report, concentration, daily_digest_config, data_completeness, dividend_income, ops_overview, paper_portfolio, portfolio_performance, price_alert_config, real_holdings, realized_gains, research_center, strategy_lab, ticker_detail, volatility_alert_config, watchlist
+from dashboard.views import alert_activity, alert_history, backtest_report, concentration, daily_digest_config, data_completeness, dividend_income, ops_overview, paper_portfolio, portfolio_overview, portfolio_performance, price_alert_config, real_holdings, realized_gains, research_center, strategy_lab, ticker_detail, volatility_alert_config, watchlist
 
-PAGE_WATCHLIST = st.Page(watchlist.render, title="Watchlist", icon="📋", url_path="watchlist", default=True)
+PAGE_PORTFOLIO_OVERVIEW = st.Page(portfolio_overview.render, title="Portfolio Overview", icon="🏠", url_path="overview", default=True)
+PAGE_WATCHLIST = st.Page(watchlist.render, title="Watchlist", icon="📋", url_path="watchlist")
 PAGE_TICKER_DETAIL = st.Page(ticker_detail.render, title="Ticker Detail", icon="📈", url_path="detail")
 PAGE_PAPER_PORTFOLIO = st.Page(paper_portfolio.render, title="Paper Portfolio", icon="💼", url_path="paper-portfolio")
 PAGE_REAL_HOLDINGS = st.Page(real_holdings.render, title="Real Holdings", icon="🏦", url_path="real-holdings")
@@ -29,6 +30,6 @@ PAGE_STRATEGY_LAB = st.Page(strategy_lab.render, title="Strategy Lab", icon="�
 PAGE_OPS_OVERVIEW = st.Page(ops_overview.render, title="Operations", icon="🛠️", url_path="ops")
 
 NAV_STRUCTURE = {
-    "Overview": [PAGE_WATCHLIST, PAGE_TICKER_DETAIL, PAGE_PAPER_PORTFOLIO, PAGE_REAL_HOLDINGS, PAGE_DIVIDEND_INCOME, PAGE_CONCENTRATION, PAGE_REALIZED_GAINS, PAGE_PORTFOLIO_PERFORMANCE, PAGE_DATA_COMPLETENESS, PAGE_OPS_OVERVIEW],
+    "Overview": [PAGE_PORTFOLIO_OVERVIEW, PAGE_WATCHLIST, PAGE_TICKER_DETAIL, PAGE_PAPER_PORTFOLIO, PAGE_REAL_HOLDINGS, PAGE_DIVIDEND_INCOME, PAGE_CONCENTRATION, PAGE_REALIZED_GAINS, PAGE_PORTFOLIO_PERFORMANCE, PAGE_DATA_COMPLETENESS, PAGE_OPS_OVERVIEW],
     "Research": [PAGE_RESEARCH_CENTER, PAGE_BACKTEST, PAGE_ALERTS, PAGE_ALERT_ACTIVITY, PAGE_PRICE_ALERT_CONFIG, PAGE_VOLATILITY_ALERT_CONFIG, PAGE_DAILY_DIGEST_CONFIG, PAGE_STRATEGY_LAB],
 }
