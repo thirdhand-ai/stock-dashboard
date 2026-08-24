@@ -11,6 +11,12 @@ Distinct from the price/volatility alert systems: this never evaluates a
 crossing or a large move. When on, it fires once per trading day
 unconditionally (automation/run_daily.py, after the pipeline completes,
 win or fail) - see alerts/daily_digest_engine.py's docstring.
+
+Also shows a read-only content preview grouped by holding type (Real
+Holdings / Watchlist / Exploratory - see dashboard/holding_type.py), since
+Exploratory tickers are excluded from the digest by default (no configured
+price/volatility alert threshold -> not in the ticker union) - see
+_render_content_preview()'s docstring/copy for the reasoning.
 """
 import streamlit as st
 
@@ -18,8 +24,16 @@ from dashboard import components
 from dashboard.data import (
     get_daily_digest_enabled,
     get_daily_digest_log,
+    get_daily_digest_preview_tickers,
+    get_holding_type_map,
     send_daily_digest_test_notification,
     set_daily_digest_enabled,
+)
+from dashboard.holding_type import (
+    HOLDING_TYPE_EXPLORATORY,
+    HOLDING_TYPE_ORDER,
+    holding_type_for,
+    holding_type_label,
 )
 
 
@@ -72,6 +86,57 @@ def _render_recent_digests():
     st.dataframe(display[columns], use_container_width=True, hide_index=True)
 
 
+def _render_content_preview():
+    st.subheader("Content preview by holding type")
+    tickers = get_daily_digest_preview_tickers()
+    if not tickers:
+        st.caption("No tickers are currently in scope for the digest.")
+        return
+
+    type_map = get_holding_type_map()
+    by_type = {t: [] for t in HOLDING_TYPE_ORDER}
+    for ticker in tickers:
+        holding_type = holding_type_for(ticker, type_map)
+        by_type.setdefault(holding_type, []).append(ticker)
+
+    exploratory_count = len(by_type.get(HOLDING_TYPE_EXPLORATORY, []))
+    st.caption(
+        f"The next digest run would cover {len(tickers)} ticker(s), grouped below by holding type. "
+        "This mirrors automation/pipeline.py's default ticker selection - WATCHLIST plus any ticker "
+        "with a configured price/volatility alert threshold plus every Real Holdings ticker."
+    )
+
+    cols = st.columns(len([t for t in HOLDING_TYPE_ORDER if by_type.get(t)]) or 1)
+    i = 0
+    for holding_type in HOLDING_TYPE_ORDER:
+        group = by_type.get(holding_type, [])
+        if not group:
+            continue
+        with cols[i]:
+            st.markdown(f"**{holding_type_label(holding_type)}** ({len(group)})")
+            st.caption(", ".join(sorted(group)))
+        i += 1
+
+    if exploratory_count == 0:
+        st.info(
+            "🧪 **Exploratory tickers are excluded from the digest by default.** They have no "
+            "real-money ownership, so they're deliberately left out of the same list Mom/Dad/Tyler "
+            "check for portfolio-relevant summaries - keeps the digest focused instead of diluted "
+            "with speculative research tickers moving around day to day. To include a specific "
+            "exploratory ticker anyway, add a Price Alert or Volatility Alert threshold for it - "
+            "that already pulls it into the digest automatically, no extra toggle needed.",
+            icon="🧪",
+        )
+    else:
+        st.warning(
+            f"🧪 **{exploratory_count} Exploratory ticker(s) are currently included** in the digest "
+            "(because a Price Alert or Volatility Alert threshold is configured for them). If that's "
+            "unintentional noise mixed in with real-money tickers, remove that threshold on the "
+            "Price/Volatility Alert Thresholds pages.",
+            icon="⚠️",
+        )
+
+
 def _render_test_alert_button():
     st.subheader("Verify delivery")
     st.caption(
@@ -96,6 +161,9 @@ def render():
     )
     components.disclaimer("Daily summary only - not a stock signal, not a trade recommendation.")
 
+    _render_content_preview()
+
+    st.divider()
     _render_test_alert_button()
 
     st.divider()

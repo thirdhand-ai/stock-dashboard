@@ -5,11 +5,16 @@ manual test sends. Purely a display page: it only ever calls
 dashboard.data's get_alert_activity_feed(), which only ever SELECTs from
 five existing tables (see dashboard/data.py::_load_alert_activity_feed) -
 no write path is added here or anywhere reachable from this page.
+
+Each row is also labeled with its holding type (Real Holdings / Watchlist /
+Exploratory - see dashboard/holding_type.py) and filterable by it, so
+real-money alerts stay easy to isolate from exploratory-ticker noise.
 """
 import streamlit as st
 
 from dashboard import components
-from dashboard.data import get_alert_activity_feed, get_all_active_snoozes
+from dashboard.data import get_alert_activity_feed, get_all_active_snoozes, get_holding_type_map
+from dashboard.holding_type import HOLDING_TYPE_ORDER, holding_type_for, holding_type_label
 
 
 def _render_currently_snoozed():
@@ -62,18 +67,34 @@ def render():
         )
         return
 
+    type_map = get_holding_type_map()
+    feed = feed.copy()
+    feed["holding_type"] = feed["ticker"].apply(lambda t: holding_type_for(t, type_map))
+
     types_available = sorted(feed["type"].unique())
+    holding_types_available = [t for t in HOLDING_TYPE_ORDER if t in set(feed["holding_type"].dropna())]
     min_date, max_date = feed["timestamp"].min().date(), feed["timestamp"].max().date()
 
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
     with col1:
         selected_types = st.multiselect("Filter by type", types_available, default=types_available)
     with col2:
-        start_date = st.date_input("From", value=min_date, min_value=min_date, max_value=max_date)
+        selected_holding_types = st.multiselect(
+            "Filter by holding type",
+            holding_types_available,
+            default=holding_types_available,
+            format_func=holding_type_label,
+            help="🏦 Real Holdings = actually owned - the alerts that matter for real money. "
+                 "👁️ Watchlist / 🧪 Exploratory = no ownership. Rows with no associated ticker "
+                 "(Daily Digest, Operational Failure, test sends) are always shown.",
+        )
     with col3:
+        start_date = st.date_input("From", value=min_date, min_value=min_date, max_value=max_date)
+    with col4:
         end_date = st.date_input("To", value=max_date, min_value=min_date, max_value=max_date)
 
     filtered = feed[feed["type"].isin(selected_types)]
+    filtered = filtered[filtered["holding_type"].isin(selected_holding_types) | filtered["holding_type"].isna()]
     filtered = filtered[
         (filtered["timestamp"].dt.date >= start_date) & (filtered["timestamp"].dt.date <= end_date)
     ]
@@ -87,8 +108,9 @@ def render():
     display = filtered.copy()
     display["Timestamp"] = display["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
     display["Ticker"] = display["ticker"].fillna("—")
+    display["Holding Type"] = display["holding_type"].map(holding_type_label)
     display = display.rename(columns={
         "type": "Type", "description": "Description", "email_status": "Email", "discord_status": "Discord",
     })
-    columns = ["Timestamp", "Type", "Ticker", "Description", "Email", "Discord"]
+    columns = ["Timestamp", "Type", "Ticker", "Holding Type", "Description", "Email", "Discord"]
     st.dataframe(display[columns], use_container_width=True, hide_index=True)

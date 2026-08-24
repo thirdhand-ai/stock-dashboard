@@ -1,9 +1,11 @@
 """Portfolio Overview: the landing page. A read-only aggregation of what's
-already computed elsewhere in this dashboard - total portfolio value and
+already computed elsewhere in this dashboard - a tracked-tickers-by-type
+breakdown (see dashboard/holding_type.py), total portfolio value and
 gain/loss (combined + per-owner, from Real Holdings), active concentration
 flags (from Portfolio Concentration), pending data-completeness gaps (from
-Data Completeness), the 5 most recent Alert Activity entries, and a 30-day
-snapshot of the combined portfolio-value chart (from Portfolio Performance).
+Data Completeness), the 5 most recent Alert Activity entries (optionally
+filtered to Real Holdings only), and a 30-day snapshot of the combined
+portfolio-value chart (from Portfolio Performance).
 
 Every number here comes from the same dashboard/data.py getters those pages
 already call - this module computes nothing new and adds no second
@@ -18,9 +20,11 @@ from dashboard.data import (
     get_alert_activity_feed,
     get_concentration_reports,
     get_data_completeness_report,
+    get_holding_type_map,
     get_portfolio_value_series_by_scope,
     get_real_holdings_view,
 )
+from dashboard.holding_type import HOLDING_TYPE_ORDER, HOLDING_TYPE_REAL, holding_type_for, holding_type_label
 from trading.portfolio_history import to_series
 from trading.real_holdings import portfolio_totals, subtotals_by_owner
 
@@ -43,6 +47,27 @@ def _page_link(page_attr: str, label: str):
     objects, so importing it eagerly here would be circular."""
     from dashboard import pages_registry
     st.page_link(getattr(pages_registry, page_attr), label=label)
+
+
+def _render_holdings_breakdown():
+    st.subheader("Tracked tickers by type")
+    st.caption(
+        "🏦 Real Holdings = actually owned. 👁️ Watchlist = original tracked tickers, no ownership. "
+        "🧪 Exploratory = speculative research/AI tickers, no ownership. A ticker that's both owned "
+        "and on the watchlist is always counted as Real Holdings."
+    )
+    type_map = get_holding_type_map()
+    counts = {t: 0 for t in HOLDING_TYPE_ORDER}
+    for holding_type in type_map.values():
+        counts[holding_type] = counts.get(holding_type, 0) + 1
+
+    cols = st.columns(len([t for t in HOLDING_TYPE_ORDER if counts.get(t, 0) > 0]) or 1)
+    i = 0
+    for holding_type in HOLDING_TYPE_ORDER:
+        if counts.get(holding_type, 0) == 0:
+            continue
+        cols[i].metric(holding_type_label(holding_type), counts[holding_type])
+        i += 1
 
 
 def _render_value_summary():
@@ -121,11 +146,32 @@ def _render_recent_alerts():
         _page_link("PAGE_ALERT_ACTIVITY", "Go to Alert Activity →")
         return
 
+    type_map = get_holding_type_map()
+    feed = feed.copy()
+    feed["holding_type"] = feed["ticker"].apply(lambda t: holding_type_for(t, type_map))
+
+    real_only = st.checkbox(
+        "Show only Real Holdings alerts",
+        value=False,
+        help="Hide alert activity for Watchlist/Exploratory tickers - isolate what actually touches "
+             "Mom/Dad/Tyler's real money.",
+    )
+    if real_only:
+        feed = feed[feed["holding_type"] == HOLDING_TYPE_REAL]
+        if feed.empty:
+            st.caption("No Real Holdings alert activity recorded yet.")
+            _page_link("PAGE_ALERT_ACTIVITY", "Go to Alert Activity →")
+            return
+
     recent = feed.head(RECENT_ALERT_COUNT).copy()
     recent["Timestamp"] = recent["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
     recent["Ticker"] = recent["ticker"].fillna("—")
+    recent["Holding Type"] = recent["holding_type"].map(holding_type_label)
     recent = recent.rename(columns={"type": "Type", "description": "Description"})
-    st.dataframe(recent[["Timestamp", "Type", "Ticker", "Description"]], use_container_width=True, hide_index=True)
+    st.dataframe(
+        recent[["Timestamp", "Type", "Ticker", "Holding Type", "Description"]],
+        use_container_width=True, hide_index=True,
+    )
 
     _page_link("PAGE_ALERT_ACTIVITY", "Go to Alert Activity →")
 
@@ -157,6 +203,8 @@ def render():
     )
     components.disclaimer("Portfolio summary only - not a stock signal, not a trade recommendation.")
 
+    _render_holdings_breakdown()
+    st.divider()
     _render_value_summary()
     st.divider()
     _render_concentration_flags()

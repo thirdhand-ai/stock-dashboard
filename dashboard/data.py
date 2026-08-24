@@ -492,6 +492,22 @@ def get_daily_digest_log(limit: int = 50) -> pd.DataFrame:
         return load_digest_log(conn, limit=limit)
 
 
+@st.cache_data(ttl=ALERTS_TTL_SECONDS, show_spinner=False)
+def get_daily_digest_preview_tickers() -> List[str]:
+    """Read-only preview of which tickers the next automated daily-digest
+    run would cover. Mirrors automation/pipeline.py's default-ticker union
+    (WATCHLIST + any ticker with a configured price/volatility alert
+    threshold + every real_holdings ticker) purely for display - never
+    calls run_pipeline/run_daily_digest and evaluates no alert condition.
+    If that union's logic ever changes, mirror the change here too."""
+    extra = (
+        {t.ticker for t in get_price_alert_thresholds()}
+        | {c.ticker for c in get_volatility_alert_configs()}
+        | {v.ticker for v in get_real_holdings_view()}
+    )
+    return WATCHLIST + sorted(t for t in extra if t not in WATCHLIST)
+
+
 def _record_test_send(alert_type: str, result) -> None:
     """Shared persistence step for every send_*_test_notification wrapper
     below - runs AFTER delivery already completed, and writes only to the
@@ -691,6 +707,17 @@ def get_real_holdings_view() -> List:
     from trading.real_holdings import build_real_holdings_view
     with db_session() as conn:
         return build_real_holdings_view(conn)
+
+
+@st.cache_data(ttl=WATCHLIST_TTL_SECONDS, show_spinner=False)
+def get_holding_type_map() -> dict:
+    """{ticker: holding_type} across every ticker this dashboard tracks -
+    see dashboard/holding_type.py. Real-holdings membership comes from the
+    live real_holdings table (get_real_holdings_view), not just the subset
+    with signal-engine coverage."""
+    from dashboard.holding_type import build_holding_type_map
+    real_tickers = {v.ticker for v in get_real_holdings_view()}
+    return build_holding_type_map(real_tickers)
 
 
 @st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
