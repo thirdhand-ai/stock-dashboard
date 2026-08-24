@@ -221,8 +221,8 @@ def test_research_job_skips_when_production_run_did_not_succeed():
     from strategy_lab.research_automation import STATUS_SKIPPED_NO_FRESH_DATA, run_research_job
 
     conn = make_test_db()
-    today = date.today()
-    run_id = start_run(conn, "real")
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
+    run_id = start_run(conn, "real", trading_date=today)
     finish_run(conn, run_id, status=STATUS_FAILED, tickers_attempted=7, tickers_failed=7)
 
     result = run_research_job(conn, today=today, tickers=["AAA"])
@@ -234,8 +234,8 @@ def test_research_job_creates_observations_when_production_run_succeeded():
     from strategy_lab.research_automation import run_research_job
 
     conn = make_test_db()
-    today = date.today()
-    run_id = start_run(conn, "real")
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
+    run_id = start_run(conn, "real", trading_date=today)
     finish_run(conn, run_id, status=STATUS_SUCCESS, tickers_attempted=7, tickers_updated=7)
 
     dates = pd.bdate_range(end=today.isoformat(), periods=90).strftime("%Y-%m-%d")
@@ -260,8 +260,8 @@ def test_research_job_never_mutates_alert_state():
     upsert_alert_state(conn, "AAPL", score=70.0, stage="momentum", alerted=False)
     before = dict(get_alert_state(conn, "AAPL"))
 
-    today = date.today()
-    run_id = start_run(conn, "real")
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
+    run_id = start_run(conn, "real", trading_date=today)
     finish_run(conn, run_id, status=STATUS_SUCCESS, tickers_attempted=1, tickers_updated=1)
     run_research_job(conn, today=today, tickers=["AAA"])  # unrelated ticker, no data - still must not touch alert_state
 
@@ -273,8 +273,8 @@ def test_research_job_recovery_is_idempotent_on_duplicate_call():
     from strategy_lab.research_automation import run_research_job
 
     conn = make_test_db()
-    today = date.today()
-    run_id = start_run(conn, "real")
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
+    run_id = start_run(conn, "real", trading_date=today)
     finish_run(conn, run_id, status=STATUS_SUCCESS, tickers_attempted=1, tickers_updated=1)
 
     dates = pd.bdate_range(end=today.isoformat(), periods=90).strftime("%Y-%m-%d")

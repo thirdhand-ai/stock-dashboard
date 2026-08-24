@@ -38,7 +38,7 @@ def make_test_db():
 
 
 def _seed_successful_production_run(conn, today):
-    run_id = start_run(conn, "real")
+    run_id = start_run(conn, "real", trading_date=today)
     finish_run(conn, run_id, status=STATUS_SUCCESS, tickers_attempted=1, tickers_updated=1)
 
 
@@ -56,7 +56,7 @@ def _canned_obs(ticker, as_of_date, score=90.0, stage="volume", control=True):
 
 def test_partial_failure_when_one_ticker_raises_status_is_partial_failure_not_success():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     def fake_build(conn_, ticker, as_of_date=None, config_fingerprint=None):
@@ -79,7 +79,7 @@ def test_partial_failure_when_one_ticker_raises_status_is_partial_failure_not_su
 
 def test_maturation_only_failure_still_moves_status_off_success():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     with patch("strategy_lab.research_automation.build_todays_observation",
@@ -100,7 +100,7 @@ def test_maturation_only_failure_still_moves_status_off_success():
 
 def test_total_failure_zero_progress_and_errors_is_status_failed():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     with patch("strategy_lab.research_automation.build_todays_observation",
@@ -114,7 +114,7 @@ def test_total_failure_zero_progress_and_errors_is_status_failed():
 
 def test_clean_run_with_no_errors_stays_success():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     with patch("strategy_lab.research_automation.build_todays_observation",
@@ -130,7 +130,7 @@ def test_clean_run_with_no_errors_stays_success():
 
 def test_bug2_crash_during_event_building_then_retry_recovers_events():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     # Seed a PRIOR day's stored observation as the transition baseline -
@@ -185,7 +185,7 @@ def test_bug2_crash_during_event_building_then_retry_recovers_events():
 
 def test_duplicate_rerun_is_idempotent_events_created_zero_on_clean_second_run():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     from automation.trading_calendar import trading_sessions_between
@@ -222,7 +222,7 @@ def test_research_job_never_mutates_alert_state_even_on_partial_failure():
     upsert_alert_state(conn, "AAPL", score=70.0, stage="momentum", alerted=False)
     before = dict(get_alert_state(conn, "AAPL"))
 
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
     with patch("strategy_lab.research_automation.build_todays_observation",
                side_effect=RuntimeError("boom")):

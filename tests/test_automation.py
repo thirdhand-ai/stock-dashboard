@@ -568,17 +568,18 @@ def test_recovery_is_idempotent_and_does_nothing_if_success_already_exists():
     # automation_runs.started_at is always real wall-clock time (datetime('now')
     # in db/run_history_repository.py), independent of run_pipeline's `today`
     # override (which only governs the trading-day check) - so the
-    # idempotency check and the establishing run must agree on a real date.
+    # idempotency check and the establishing run must agree on the same
+    # fixed `today` value.
     from automation.recovery import run_recovery
 
     conn = make_test_db()
-    real_today = date.today()
+    fixed_today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     fake_ingest = fake_ingest_ticker_factory()
     with patch("automation.pipeline.alpaca_source.ingest_ticker", side_effect=fake_ingest), \
          patch("alerts.engine.compute_indicators_for_ticker", side_effect=lambda conn, t: strong_indicator_result(t)):
-        run_pipeline(conn, tickers=["AAA"], today=real_today, skip_non_trading_day_check=True)  # establishes a successful run
+        run_pipeline(conn, tickers=["AAA"], today=fixed_today, skip_non_trading_day_check=True)  # establishes a successful run
 
-    recovery = run_recovery(conn, tickers=["AAA"], today=real_today)
+    recovery = run_recovery(conn, tickers=["AAA"], today=fixed_today)
     assert recovery.ran is False
     assert "already exists" in recovery.reason
 
@@ -587,15 +588,15 @@ def test_recovery_retries_when_todays_run_failed():
     from automation.recovery import run_recovery
 
     conn = make_test_db()
-    real_today = date.today()
+    fixed_today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     fake_ingest = fake_ingest_ticker_factory(fail_tickers={"AAA"})
     with patch("automation.pipeline.alpaca_source.ingest_ticker", side_effect=fake_ingest):
-        run_pipeline(conn, tickers=["AAA"], today=real_today, skip_non_trading_day_check=True)  # fails
+        run_pipeline(conn, tickers=["AAA"], today=fixed_today, skip_non_trading_day_check=True)  # fails
 
     good_ingest = fake_ingest_ticker_factory()
     with patch("automation.pipeline.alpaca_source.ingest_ticker", side_effect=good_ingest), \
          patch("alerts.engine.compute_indicators_for_ticker", side_effect=lambda conn, t: strong_indicator_result(t)):
-        recovery = run_recovery(conn, tickers=["AAA"], today=real_today)
+        recovery = run_recovery(conn, tickers=["AAA"], today=fixed_today)
 
     assert recovery.ran is True
     assert recovery.pipeline_result.status == STATUS_SUCCESS

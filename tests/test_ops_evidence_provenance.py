@@ -62,7 +62,7 @@ def make_test_db():
 
 
 def _seed_successful_production_run(conn, today):
-    run_id = start_run(conn, "real")
+    run_id = start_run(conn, "real", trading_date=today)
     finish_run(conn, run_id, status=STATUS_SUCCESS, tickers_attempted=1, tickers_updated=1)
 
 
@@ -172,7 +172,7 @@ def test_build_todays_observation_threads_config_fingerprint_value():
 
 def test_single_fingerprint_shared_across_tickers_in_one_run():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     captured_fingerprints = []
@@ -199,7 +199,7 @@ def test_single_fingerprint_shared_across_tickers_in_one_run():
 
 def test_fail_open_fingerprint_capture_never_fails_job():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     def fake_build(conn_, ticker, as_of_date=None, config_fingerprint=None):
@@ -230,7 +230,7 @@ def test_fail_open_fingerprint_capture_does_not_mask_a_real_unrelated_failure():
     still surface as PARTIAL_FAILURE/FAILED for the *real* reason - the
     fingerprint failure must not silently swallow that."""
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     def fake_build(conn_, ticker, as_of_date=None, config_fingerprint=None):
@@ -323,7 +323,7 @@ def test_compute_outcome_for_horizon_default_price_cache_none_still_works():
 
 def test_duplicate_retry_never_overwrites_config_fingerprint_on_existing_row():
     conn = make_test_db()
-    today = date.today()
+    today = date(2026, 8, 10)  # a Monday, confirmed NYSE trading day
     _seed_successful_production_run(conn, today)
 
     def fake_build(conn_, ticker, as_of_date=None, config_fingerprint=None):
