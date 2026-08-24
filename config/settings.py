@@ -55,9 +55,30 @@ REAL_HOLDINGS_WITH_SIGNAL_COVERAGE = ["XLV", "NCLH", "KMI", "HPI"]
 # and AMZN were requested alongside this list but are already core WATCHLIST
 # tickers with full coverage, so they're intentionally left out here rather
 # than duplicated.
+#
+# Batch 2 (2026-08-24, the 26 tickers starting at "INTC" below - the
+# request said 25, but listed 26 distinct tickers; all 26 were kept rather
+# than guessing which to drop) deliberately has NO price-threshold or
+# volatility-alert config, unlike batch 1 above (which originally did, until
+# those were removed the same day for generating digest/alert-activity
+# noise). Consequently, batch 2 is NOT part of automation/pipeline.py's
+# default daily ticker union either - that union is driven entirely by
+# WATCHLIST + configured alert thresholds + real_holdings, never by this
+# list. These tickers got a one-time historical backfill instead (via
+# ingestion/alpaca_source.py, run manually - see git history for this
+# commit) and will NOT refresh automatically going forward; re-run that
+# backfill by hand when the data gets too stale. The alternative - adding
+# them to the daily ticker union to stay fresh - would also expose them to
+# alerts/engine.py's score-crossing/stage-advance Discord alert, which has
+# no per-ticker opt-out (unlike price/volatility alerts, it evaluates every
+# ticker the pipeline touches unconditionally). Staleness was judged the
+# safer tradeoff for tickers meant to be purely observational.
 EXPLORATORY_WATCHLIST = [
     "AVGO", "TSM", "AMD", "MU", "ALAB", "ANET", "ASML", "PLTR",
     "SNOW", "NXPI", "SNPS", "IBM", "APP",
+    "INTC", "MRVL", "WDC", "STX", "SNDK", "COHR", "SMCI", "BABA", "JD", "FUTU",
+    "HOOD", "SOFI", "VIRT", "BGC", "MP", "SCCO", "ERO", "UUUU", "DK", "CVI",
+    "PARR", "IREN", "CRWV", "FCFS", "TEM", "MRNA",
 ]
 
 # Tickers shown with score/stage signal indicators across the dashboard.
