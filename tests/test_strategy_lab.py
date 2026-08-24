@@ -174,10 +174,19 @@ def test_phase9_baseline_summary_has_required_sections():
     assert "webhook" not in dumped and "api_key" not in dumped and "secret" not in dumped
 
 
-def test_production_fingerprint_self_diff_is_empty():
-    from strategy_lab.production_guard import compute_fingerprint, diff_against_saved, save_fingerprint
-    save_fingerprint()
-    assert diff_against_saved() == {}
+def test_production_fingerprint_self_diff_is_empty(tmp_path, monkeypatch):
+    # Redirect the guard's file target to a throwaway temp path - this test
+    # exercises the save/diff round trip, not persistence of the real,
+    # git-tracked data/research_cache/production_fingerprint.json, which
+    # save_fingerprint() would otherwise overwrite as a side effect of
+    # merely running the suite.
+    from strategy_lab import production_guard
+
+    monkeypatch.setattr(production_guard, "FINGERPRINT_DIR", tmp_path)
+    monkeypatch.setattr(production_guard, "FINGERPRINT_FILE", tmp_path / "production_fingerprint.json")
+
+    production_guard.save_fingerprint()
+    assert production_guard.diff_against_saved() == {}
 
 
 def test_production_fingerprint_detects_structured_change():
