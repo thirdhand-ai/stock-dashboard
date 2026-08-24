@@ -776,6 +776,19 @@ def get_data_completeness_report():
 
 
 @st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
+def get_holdings_consistency_mismatches():
+    """Read-only list of real_holdings positions whose lot/dividend ledger
+    (real_holding_lots + dividend_payments) doesn't sum to their recorded
+    shares/cost_basis_total - see trading/holdings_consistency.py's
+    docstring for why this is a different class of problem from
+    get_data_completeness_report's gaps (data that disagrees with itself,
+    not data that's missing)."""
+    from trading.holdings_consistency import check_all_holdings_consistency
+    with db_session() as conn:
+        return check_all_holdings_consistency(conn)
+
+
+@st.cache_data(ttl=PAPER_PORTFOLIO_TTL_SECONDS, show_spinner=False)
 def get_portfolio_value_series_by_scope() -> dict:
     """Combined + per-owner historical portfolio value series - see
     trading/portfolio_history.py's docstring: a holding with no dated
