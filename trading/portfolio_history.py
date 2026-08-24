@@ -3,25 +3,33 @@ price) at each date, across whatever price history is already stored per
 ticker (db/price_repository.py::load_price_history - the same price data
 every other view in this codebase reads).
 
-No dated share-count-change events exist anywhere in this system today
-(checked before building this: dividend_payments has zero rows, so no
-DRIP reinvestment has a recorded date; the one realized_sales row - META
-- has both purchase_date and sale_date NULL). Given that, the best
-available estimate is each holding's CURRENT share count applied across
-its full stored price history - but for a holding KNOWN to have grown or
-shrunk at some point (DRIP reinvestment, a partial sale), applying
-today's count to years-old prices can overstate (or understate) what was
-actually held then. Every such ticker is flagged as approximate rather
-than silently presented as precise - see _ticker_reliability. A holding
-with NO shares on record at all (needs_manual_entry) contributes nothing
-and is listed separately as excluded, never estimated.
+For most holdings, no dated share-count-change events exist anywhere in
+this system (dividend_payments has zero rows for them, so no DRIP
+reinvestment has a recorded date; realized_sales rows are often undated
+too). For those, the best available estimate is each holding's CURRENT
+share count applied across its full stored price history - but for a
+holding KNOWN to have grown or shrunk at some point (DRIP reinvestment, a
+partial sale) without dated records, applying today's count to years-old
+prices can overstate (or understate) what was actually held then. Every
+such ticker is flagged as approximate rather than silently presented as
+precise - see _ticker_reliability. A holding with NO shares on record at
+all (needs_manual_entry) contributes nothing and is listed separately as
+excluded, never estimated.
 
-If dated share-count events are added later (e.g. real purchase/sale
-dates filled into realized_sales, or a future dividend_payments schema
-that tracks shares-acquired-per-DRIP-payment with dates), this module can
-be extended to reconstruct a precise piecewise share count instead of a
-constant one - that reconstruction isn't built yet because no dated data
-exists to reconstruct from.
+Some holdings (currently HPI and KMI) DO have a full dated history now:
+an original cash-purchase lot in real_holding_lots plus every subsequent
+DRIP reinvestment as a dated, reinvested=1 row in dividend_payments (see
+_reconstruct_share_timeline). When those dated events sum to exactly the
+holding's current recorded share count, this module reconstructs a
+precise piecewise share count - 0 shares before the first lot, stepping
+up at each event's date - instead of applying a constant count. A holding
+whose dated events DON'T fully account for its current share count (e.g.
+no lots recorded at all, or only partial DRIP history) falls back to the
+flat, current-share-count approximation, flagged via share_history_caveat
+same as before - this is auto-detected per (ticker, owner) from what's
+actually in the database, not hardcoded to any specific ticker, so any
+future holding with a full dated history gets the same precise treatment
+automatically.
 
 Price source: deliberately does NOT use db/price_repository.py::
 load_price_history's default source resolution unmodified - found while
@@ -40,14 +48,78 @@ HPI/STN, which only have 'alpaca'). This is scoped to this module only -
 db/price_repository.py's shared resolve_source is unchanged, so no other
 page's behavior is affected by this fix.
 """
+import bisect
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from db.dividend_payments_repository import list_dividend_payments
 from db.price_repository import load_price_history
+from db.real_holding_lots_repository import list_real_holding_lots
 from db.real_holdings_repository import RealHolding, list_real_holdings
 from db.realized_sales_repository import list_realized_sales
+
+# Tolerance for comparing a reconstructed dated-event share total against
+# real_holdings.shares - both are sums of many float additions (dividend
+# shares are total_received / amount_per_share), so they won't always
+# match to the last bit; anything within a hundredth of a share is the
+# same position, not a partial/incomplete reconstruction.
+RECONSTRUCTION_TOLERANCE = 0.01
+
+
+def _reconstruct_share_timeline(conn, ticker: str, owner: str) -> List[Tuple[str, float]]:
+    """Every dated share-count-increasing event for (ticker, owner), sorted
+    ascending by date, as (date, cumulative_shares_as_of_that_date) pairs -
+    a cash-purchase lot from real_holding_lots (db/
+    real_holding_lots_schema.py) contributes its `shares` directly; a
+    reinvested dividend_payments row (db/dividend_payments_schema.py)
+    contributes total_received / amount_per_share, the shares that
+    specific reinvestment bought. [] if this (ticker, owner) has no dated
+    events at all recorded in either table - the caller falls back to the
+    flat, current-share-count approximation in that case (see
+    _is_fully_reconstructed)."""
+    lots = list_real_holding_lots(conn, ticker=ticker, owner=owner)
+    payments = list_dividend_payments(conn, ticker=ticker, owner=owner)
+    events: List[Tuple[str, float]] = [(lot.purchase_date, lot.shares) for lot in lots]
+    events += [
+        (p.pay_date, p.total_received / p.amount_per_share)
+        for p in payments if p.reinvested and p.amount_per_share
+    ]
+    if not events:
+        return []
+
+    events.sort(key=lambda e: e[0])
+    timeline: List[Tuple[str, float]] = []
+    running = 0.0
+    for date, delta in events:
+        running += delta
+        timeline.append((date, running))
+    return timeline
+
+
+def _is_fully_reconstructed(timeline: List[Tuple[str, float]], shares: Optional[float]) -> bool:
+    """True when `timeline` (from _reconstruct_share_timeline) accounts for
+    the ENTIRE current share count, not just some of it - the reconstructed
+    running total after the last event must land within
+    RECONSTRUCTION_TOLERANCE of real_holdings.shares. A holding with only
+    partial dated history (e.g. some but not all DRIP payments recorded)
+    would otherwise silently understate early-history value without ever
+    being flagged - this check is what keeps a partial reconstruction from
+    masquerading as a complete one."""
+    return bool(timeline) and shares is not None and abs(timeline[-1][1] - shares) <= RECONSTRUCTION_TOLERANCE
+
+
+def _shares_as_of(timeline: List[Tuple[str, float]], date: str) -> float:
+    """Cumulative shares held as of `date`, from a `timeline` already
+    sorted ascending by date (as returned by _reconstruct_share_timeline).
+    0.0 for any date before the first event - the position didn't exist
+    yet, so it never contributed to portfolio value that early. ISO date
+    strings ("YYYY-MM-DD") compare correctly with plain string ordering,
+    so bisect works directly on them without parsing."""
+    dates = [d for d, _ in timeline]
+    idx = bisect.bisect_right(dates, date) - 1
+    return timeline[idx][1] if idx >= 0 else 0.0
 
 
 @dataclass(frozen=True)
@@ -57,16 +129,23 @@ class TickerReliability:
     caveat: str
 
 
-def _ticker_reliability(conn, holding: RealHolding) -> Optional[TickerReliability]:
-    """None if this holding's current share count is believed to apply
-    across its whole stored price history; a TickerReliability explaining
-    why otherwise. Checked in priority order: an explicit
-    share_history_caveat (DRIP growth - see db/real_holdings_schema.py's
-    docstring) first, then any realized_sales row for this holding with
-    an unknown sale_date (a sale happened, but we don't know when, so we
-    don't know which historical dates the current, post-sale count
-    actually applies to)."""
-    if holding.share_history_caveat:
+def _ticker_reliability(holding: RealHolding, conn, timeline: List[Tuple[str, float]]) -> Optional[TickerReliability]:
+    """None if this holding's value-over-time contribution is believed
+    precise (either a full dated reconstruction exists - see
+    _is_fully_reconstructed - or there's no reason to doubt the flat
+    current-share-count approximation); a TickerReliability explaining why
+    otherwise. Checked in priority order: an explicit share_history_caveat
+    (DRIP growth with no full dated reconstruction - see db/
+    real_holdings_schema.py's docstring) UNLESS `timeline` already fully
+    accounts for the current share count (in which case the caveat is
+    stale and skipped - see trading/real_holdings.py's real_holdings row
+    for HPI/KMI, whose share_history_caveat was cleared once their dated
+    reconstruction landed), then any realized_sales row for this holding
+    with an unknown sale_date (a sale happened, but we don't know when, so
+    we don't know which historical dates the current, post-sale count
+    actually applies to - independent of whether the growth side of the
+    history is dated)."""
+    if not _is_fully_reconstructed(timeline, holding.shares) and holding.share_history_caveat:
         return TickerReliability(holding.ticker, holding.owner, holding.share_history_caveat)
 
     sales = list_realized_sales(conn, ticker=holding.ticker, owner=holding.owner)
@@ -117,16 +196,19 @@ def build_portfolio_value_series(conn, holdings: List[RealHolding], scope_label:
             excluded.append(h.ticker)
             continue
 
-        reliability = _ticker_reliability(conn, h)
+        timeline = _reconstruct_share_timeline(conn, h.ticker, h.owner)
+        reliability = _ticker_reliability(h, conn, timeline)
         if reliability is not None:
             approximate.append(reliability)
+        fully_reconstructed = _is_fully_reconstructed(timeline, h.shares)
 
         df = _load_price_history_for_value_chart(conn, h.ticker)
         if df.empty:
             continue
         last_date_per_ticker[h.ticker] = str(df["date"].iloc[-1])
         for date, close in zip(df["date"], df["close"]):
-            per_date_total[str(date)] = per_date_total.get(str(date), 0.0) + h.shares * float(close)
+            shares_as_of = _shares_as_of(timeline, str(date)) if fully_reconstructed else h.shares
+            per_date_total[str(date)] = per_date_total.get(str(date), 0.0) + shares_as_of * float(close)
 
     all_dates = sorted(per_date_total)
 

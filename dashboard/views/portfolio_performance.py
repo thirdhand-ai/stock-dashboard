@@ -2,15 +2,17 @@
 sum(shares held × close price) at each date, across whatever price
 history is already stored per ticker, combined and per-owner, plus a
 relative-performance overlay against a benchmark (SPY). See
-trading/portfolio_history.py's docstring for the core limitation this
-page is built around: no dated purchase/DRIP/sale events exist anywhere
-in this system precisely enough to reconstruct a holding's share count
-changing over time, so the current share count is applied across a
-ticker's full stored history as the best available estimate - any
-holding known to have changed at an undated point (DRIP growth, an
-undated partial sale) is flagged rather than presented as precise, and a
-holding with no shares on record at all is excluded entirely rather than
-estimated.
+trading/portfolio_history.py's docstring for the core limitation most of
+this page is still built around: for a holding with no dated purchase/
+DRIP/sale events precise enough to reconstruct share-count changes over
+time, the current share count is applied across that ticker's full stored
+history as the best available estimate - any such holding known to have
+changed at an undated point (DRIP growth, an undated partial sale) is
+flagged rather than presented as precise, and a holding with no shares on
+record at all is excluded entirely rather than estimated. A holding WITH
+a full dated history (currently HPI and KMI - an original purchase lot
+plus every DRIP reinvestment, all dated) instead gets an exact piecewise
+share count at each date and is never flagged for that reason.
 
 Benchmark overlay reuses dashboard/views/paper_portfolio.py's exact
 SPY-comparison pattern (dashboard.charts.index_to_100 +
@@ -117,11 +119,12 @@ def render():
     st.title("Portfolio Performance Over Time")
     st.caption(
         "Historical value of real holdings - sum(shares held × close price) at each date, from "
-        "whatever price history is already stored per ticker. A holding's current share count is "
-        "applied across its full stored history (the best available estimate, since no dated "
-        "purchase/DRIP/sale events are tracked precisely enough to reconstruct changes over time) - "
-        "any holding known to have changed at an undated point is flagged below, and a holding with no "
-        "shares on record at all is excluded entirely rather than estimated."
+        "whatever price history is already stored per ticker. A holding with a full dated purchase/DRIP "
+        "history gets an exact share count at each date; otherwise, its current share count is applied "
+        "across its full stored history (the best available estimate without dated events to "
+        "reconstruct changes over time) - any holding still relying on that estimate after an undated "
+        "change is flagged below, and a holding with no shares on record at all is excluded entirely "
+        "rather than estimated."
     )
     components.disclaimer("Portfolio value tracking only - not a stock signal, not a trade recommendation.")
 

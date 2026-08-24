@@ -4,6 +4,8 @@ alignment. Against a throwaway in-memory SQLite database with hand-
 inserted price rows, same pattern tests/test_real_holdings.py uses."""
 import sqlite3
 
+from db.dividend_payments_repository import add_dividend_payment
+from db.real_holding_lots_repository import add_real_holding_lot
 from db.realized_sales_repository import add_realized_sale
 from db.real_holdings_repository import list_real_holdings, upsert_real_holding
 from db.schema import init_db
@@ -215,3 +217,46 @@ def test_to_series_converts_to_a_date_indexed_pandas_series():
 
     assert list(series.values) == [1000.0, 1100.0]
     assert series.index[0].strftime("%Y-%m-%d") == "2026-08-20"
+
+
+def test_fully_dated_lot_and_drip_history_gives_a_piecewise_share_count():
+    """A holding whose original lot (real_holding_lots) plus every DRIP
+    reinvestment (dividend_payments, reinvested=1) fully account for its
+    current share count gets an EXACT share count at each price date - 0
+    before the lot, growing at each reinvestment - not the flat current
+    total applied everywhere. share_history_caveat is set here too, to
+    prove the dated reconstruction takes priority and clears the flag."""
+    conn = make_test_db()
+    insert_price_row(conn, "KMI", "2021-01-01", 10.0)  # before the lot: contributes 0
+    insert_price_row(conn, "KMI", "2021-06-01", 20.0)  # after the lot, before the DRIP: 100 sh
+    insert_price_row(conn, "KMI", "2021-12-01", 30.0)  # after the DRIP: 105 sh
+    upsert_real_holding(
+        conn, "KMI", owner="Mom", shares=105.0, cost_basis_total=1500.0,
+        share_history_caveat="Stale caveat - should be superseded by the full reconstruction below.",
+    )
+    add_real_holding_lot(conn, "KMI", owner="Mom", purchase_date="2021-03-01", shares=100.0, cost_per_share=15.0, total_cost=1500.0)
+    add_dividend_payment(conn, "KMI", owner="Mom", pay_date="2021-09-01", amount_per_share=25.0, total_received=125.0, reinvested=True)
+
+    series = build_portfolio_value_series(conn, list_real_holdings(conn), "Combined")
+
+    assert series.values == [0.0, 100.0 * 20.0, 105.0 * 30.0]
+    assert series.approximate == []  # dated reconstruction supersedes the stale caveat
+
+
+def test_partial_dated_history_falls_back_to_flat_current_count_and_stays_flagged():
+    """A lot that DOESN'T add up to the current share count (missing DRIP
+    history) is not a full reconstruction - falls back to the old flat
+    behavior and keeps showing its caveat, same as before this feature."""
+    conn = make_test_db()
+    insert_price_row(conn, "KMI", "2021-01-01", 10.0)
+    upsert_real_holding(
+        conn, "KMI", owner="Mom", shares=280.0, cost_basis_total=1440.0,
+        share_history_caveat="DRIP growth, only partial dated history recorded.",
+    )
+    add_real_holding_lot(conn, "KMI", owner="Mom", purchase_date="2021-03-01", shares=96.0, cost_per_share=15.0, total_cost=1440.0)
+
+    series = build_portfolio_value_series(conn, list_real_holdings(conn), "Combined")
+
+    assert series.values == [280.0 * 10.0]  # flat current count, not the partial 96-share lot
+    assert len(series.approximate) == 1
+    assert series.approximate[0].ticker == "KMI"
