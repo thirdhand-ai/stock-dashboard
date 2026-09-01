@@ -197,6 +197,41 @@ def test_check_active_experiments_config_drift_empty_registry_returns_empty_dict
     assert experiment_registry.check_active_experiments_config_drift(conn) == {}
 
 
+def test_config_drift_false_positive_from_unrelated_settings_edit_is_fixed(tmp_path, monkeypatch):
+    """End-to-end regression for the real Phase 12 bug: registering an
+    experiment against the live config, then editing an UNRELATED
+    config/settings.py constant (SMTP settings, EXPLORATORY_WATCHLIST -
+    never WATCHLIST or any structured_values field) must not flip
+    check_active_experiments_config_drift()'s verdict to drifted=True.
+    Exercises the real production_guard.compute_fingerprint() (via
+    compute_config_fingerprint()), not a monkeypatched stand-in, so it
+    actually proves the GUARDED_SECTIONS narrowing works end to end."""
+    from strategy_lab import production_guard
+
+    monkeypatch.setattr(production_guard, "BASE_DIR", tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "settings.py").write_text(
+        '"""settings"""\nWATCHLIST = ["AAPL", "MSFT"]\n'
+    )
+
+    conn = make_test_db()
+    fingerprint_before = experiment_registry.compute_config_fingerprint()
+    _register(conn, experiment_id="exp-1", config_fingerprint=fingerprint_before)
+
+    # Unrelated edit: SMTP settings + a research-only ticker list appended -
+    # WATCHLIST itself is untouched.
+    (config_dir / "settings.py").write_text(
+        '"""settings"""\n'
+        'WATCHLIST = ["AAPL", "MSFT"]\n'
+        'SMTP_HOST = "smtp.example.com"\n'
+        'EXPLORATORY_WATCHLIST = ["AVGO", "TSM"]\n'
+    )
+
+    drift = experiment_registry.check_active_experiments_config_drift(conn)
+    assert drift["exp-1"]["drifted"] is False
+
+
 # --- seed script ---
 
 def test_register_phase10_11_experiments_seed_script_idempotent(monkeypatch):
