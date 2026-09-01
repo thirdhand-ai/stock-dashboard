@@ -50,6 +50,64 @@ def test_prefers_alpaca_adjusted_source_over_a_split_discontinuous_default():
     assert series.values == [120.68, 121.58]
 
 
+def test_falls_back_to_raw_source_when_adjusted_source_is_stale():
+    """Reproduces the real META/MSFT/NOW/NVDA case: 'alpaca_adjusted' is a
+    research/backtest cache (strategy_lab/data.py) that stopped advancing
+    past an old date while 'alpaca' (production) kept ingesting daily. A
+    ticker in that state must fall back to 'alpaca' entirely, same as a
+    ticker with no adjusted series at all - never silently truncate the
+    chart to the adjusted series' stale last date."""
+    conn = make_test_db()
+    insert_price_row(conn, "NVDA", "2026-08-11", 120.0, source="alpaca")
+    insert_price_row(conn, "NVDA", "2026-08-12", 121.0, source="alpaca")
+    insert_price_row(conn, "NVDA", "2026-08-31", 130.0, source="alpaca")  # raw kept ingesting
+    insert_price_row(conn, "NVDA", "2026-08-11", 119.5, source="alpaca_adjusted")
+    insert_price_row(conn, "NVDA", "2026-08-12", 120.5, source="alpaca_adjusted")  # adjusted froze here
+    upsert_real_holding(conn, "NVDA", owner="Mom", shares=1.0, cost_basis_total=100.0)
+
+    series = build_portfolio_value_series(conn, list_real_holdings(conn), "Combined")
+
+    assert series.dates == ["2026-08-11", "2026-08-12", "2026-08-31"]
+    assert series.values == [120.0, 121.0, 130.0]
+
+
+def test_falls_back_to_raw_source_even_when_raw_row_count_is_thin():
+    """Reproduces the real NOW case: production 'alpaca' ingestion for this
+    ticker only recently started, so it has far fewer rows than the
+    long-backfilled (but stale) 'alpaca_adjusted' cache. A naive fallback to
+    load_price_history(conn, ticker) (no explicit source) would re-run
+    resolve_source()'s MIN_TRUST_RATIO check and hand 'alpaca_adjusted'
+    right back, since 2 rows can't clear 50% of 5 rows - the fix must
+    fall back to the already-loaded raw 'alpaca' frame directly, not
+    through resolve_source()."""
+    conn = make_test_db()
+    for d, c in [("2026-08-08", 100.0), ("2026-08-09", 101.0), ("2026-08-10", 102.0),
+                 ("2026-08-11", 103.0), ("2026-08-12", 104.0)]:
+        insert_price_row(conn, "NOW", d, c, source="alpaca_adjusted")  # 5 rows, frozen at 08-12
+    insert_price_row(conn, "NOW", "2026-08-12", 104.5, source="alpaca")
+    insert_price_row(conn, "NOW", "2026-08-13", 106.0, source="alpaca")  # only 2 rows, but current
+    upsert_real_holding(conn, "NOW", owner="Mom", shares=1.0, cost_basis_total=100.0)
+
+    series = build_portfolio_value_series(conn, list_real_holdings(conn), "Combined")
+
+    assert series.dates == ["2026-08-12", "2026-08-13"]
+    assert series.values == [104.5, 106.0]
+
+
+def test_uses_adjusted_source_when_it_is_current_with_raw():
+    """Adjusted and raw sharing the same latest date is not staleness -
+    the adjusted series should still be preferred (split-adjustment
+    consistency), matching the existing NVDA split-cliff test above."""
+    conn = make_test_db()
+    insert_price_row(conn, "NVDA", "2026-08-12", 121.0, source="alpaca")
+    insert_price_row(conn, "NVDA", "2026-08-12", 120.5, source="alpaca_adjusted")
+    upsert_real_holding(conn, "NVDA", owner="Mom", shares=1.0, cost_basis_total=100.0)
+
+    series = build_portfolio_value_series(conn, list_real_holdings(conn), "Combined")
+
+    assert series.values == [120.5]
+
+
 def test_falls_back_to_default_source_when_no_adjusted_series_exists():
     conn = make_test_db()
     insert_price_row(conn, "XLV", "2026-08-20", 174.62, source="alpaca")

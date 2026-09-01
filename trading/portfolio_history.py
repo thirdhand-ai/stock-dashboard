@@ -42,11 +42,18 @@ querying prices directly: 'alpaca' jumps $1224→$121 on the split date;
 lookup elsewhere in this codebase never crosses a split boundary, so this
 never surfaced there - a multi-year value-over-time chart applying a
 constant share count is uniquely exposed to it. _load_price_history_for_value_chart
-below prefers 'alpaca_adjusted' whenever it has any data for a ticker,
-falling back to the normal resolved source otherwise (e.g. XLV/NCLH/KMI/
-HPI/STN, which only have 'alpaca'). This is scoped to this module only -
-db/price_repository.py's shared resolve_source is unchanged, so no other
-page's behavior is affected by this fix.
+below prefers 'alpaca_adjusted' for a ticker only when it's actually
+CURRENT - i.e. its latest date is not behind that same ticker's raw
+'alpaca' history - falling back to the normal resolved source otherwise
+(e.g. XLV/NCLH/KMI/HPI/STN, which only ever had 'alpaca'; and
+META/MSFT/NOW/NVDA once 'alpaca_adjusted' stopped advancing past
+2026-08-12 while 'alpaca' kept ingesting daily - see strategy_lab/
+data.py's docstring: that source is a research/backtest cache, populated
+by a one-off backfill plus a single-latest-row completeness patch, not a
+daily-incrementing feed, and is deliberately left untouched by this fix).
+This is scoped to this module only - db/price_repository.py's shared
+resolve_source and strategy_lab/data.py's cache are both unchanged, so no
+other page's or job's behavior is affected.
 """
 import bisect
 from dataclasses import dataclass, field
@@ -160,18 +167,37 @@ def _ticker_reliability(holding: RealHolding, conn, timeline: List[Tuple[str, fl
 
 
 ADJUSTED_SOURCE = "alpaca_adjusted"
+RAW_SOURCE = "alpaca"
 
 
 def _load_price_history_for_value_chart(conn, ticker: str) -> pd.DataFrame:
-    """Prefer ADJUSTED_SOURCE whenever it has any data for this ticker -
-    see this module's docstring for why (split-adjustment consistency
+    """Prefer ADJUSTED_SOURCE for this ticker only when it's actually
+    CURRENT - see this module's docstring for why the adjusted series is
+    preferred at all when it qualifies (split-adjustment consistency
     matters here in a way it doesn't for a single "current price" lookup
-    elsewhere). Falls back to the normal resolved source for a ticker
-    with no adjusted series at all."""
+    elsewhere). "Current" means: RAW_SOURCE has no row dated later than
+    ADJUSTED_SOURCE's latest row for this same ticker - i.e. the adjusted
+    series isn't lagging the raw one. A ticker whose ADJUSTED_SOURCE cache
+    has stalled while RAW_SOURCE kept ingesting (e.g. a frozen research
+    backfill - see strategy_lab/data.py) falls back to the RAW_SOURCE
+    series directly - NOT to load_price_history(conn, ticker)'s generic
+    resolve_source() pick, which would just re-apply MIN_TRUST_RATIO and
+    hand ADJUSTED_SOURCE right back for a ticker like NOW, whose thin
+    RAW_SOURCE row count (production ingestion only recently started)
+    can't clear that floor against ADJUSTED_SOURCE's much larger backfill
+    count. A ticker with no adjusted series at all still uses the normal
+    resolved source (e.g. XLV/NCLH/KMI/HPI/STN, which only ever had
+    RAW_SOURCE, so no such shadowing is possible)."""
     adjusted = load_price_history(conn, ticker, source=ADJUSTED_SOURCE)
-    if not adjusted.empty:
-        return adjusted
-    return load_price_history(conn, ticker)
+    if adjusted.empty:
+        return load_price_history(conn, ticker)
+
+    raw = load_price_history(conn, ticker, source=RAW_SOURCE)
+    adjusted_is_stale = not raw.empty and str(raw["date"].iloc[-1]) > str(adjusted["date"].iloc[-1])
+    if adjusted_is_stale:
+        return raw
+
+    return adjusted
 
 
 @dataclass
